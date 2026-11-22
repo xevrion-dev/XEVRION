@@ -1,0 +1,6635 @@
+--========================================================
+-- ✈ XEVRION HUB  (UI v25 - single LocalScript)
+--  • v28 FIX: bombs waiting above the target no longer touch each other (own slot, 14 studs apart),
+--    so none explodes in the air. Launch is ONE smooth rocket-like curve, dive accelerates smoothly.
+--  • v27 FIX: the bomb no longer bounces up after touching the target. It dives straight THROUGH the
+--    target and slams into the GROUND right under it, then keeps pushing down until it explodes.
+--  • v26 FIX: NO SPIN on the hit. Bombs now dive perfectly STRAIGHT (nose first, no self-spin,
+--    no curve). Spin power was removed. SWARM (tab 2): NEAT SPREAD = the bombs open into an evenly
+--    spaced ring (equal gaps, same height), then they rush over the target and nuke-dive from above.
+--    New row in tab 2: SPREAD RADIUS.
+--  • v25 FIX: NO MORE CIRCLING after launch. The moment you launch / attack, ALL bombs fly
+--    straight up at once, move over their target and wait there (hovering, not orbiting).
+--    Then they dive one by one every BOMB INTERVAL seconds. Orbit is only for waiting BEFORE launch.
+--  • v24: NEW ATTACK STYLE (tabs 2 / 3 / 4 / 5): every bomb first flies STRAIGHT UP, moves over the
+--    target, then dives STRAIGHT DOWN on it (shape of the letter "n", like a nuke).
+--    Bombs leave ONE BY ONE every BOMB INTERVAL seconds (default 1 s), they do NOT wait for the
+--    previous bomb to explode. DIVE HEIGHT + BOMB INTERVAL are in every tab.
+--  • v23: NEW TAB 5 = SCATTER: bombs orbit you, LAUNCH = they spiral outward while spinning,
+--    then each bomb dashes at its OWN random player (1 bomb = 1 target)
+--  • v23 FIX (all tabs): touching the target is NOT an explosion. The bomb only counts as
+--    exploded when it disappears. If it is still there it bounces away and hits again.
+--  • v22: MENU = 3 TABS:  1) DRONE   2) SWARM   3) ORBIT TARGET (drone and swarm are separate now)
+--  • v22 SWARM: up to 8 bombs, orbit radius up to 30, wavy orbit,
+--    after the scatter the bombs dive on the target ONE BY ONE
+--  • v22 ORBIT TARGET: pick the target from the menu list, bombs orbit it from far away
+--    (30+ studs, wavy), ATTACK = faster and faster spin for 3 s, then they hit the target
+--  • Flight / bomb physics unchanged
+--  • UI EDITOR: move, resize, reset every HUD element (incl. NEXT button)
+--  • HUD layout + settings AUTO-SAVE (writefile on executors,
+--    LocalStorageService as backup) and AUTO-LOAD on every run
+--  • Lock-on (PLAYERS only): head aim, camera centers target,
+--    lock box lines up with target, bomb detonates on target
+--  • v15: NEXT TARGET (button / T), friend check
+--  • v16: lock always picks the NEAREST target (any distance, no lock area)
+--  • v16: menu is scrollable; FOV + camera distance use [-] [+] buttons (no sliders)
+--  • v19: BOOST button / B key = temporary speed burst (2 s) + cooldown (5 s), BOOST POWER [-] [+]
+--  • v20: SWARM STRIKE = up to 6 bombs orbit ABOVE you, LAUNCH -> scatter upward -> auto-homing
+--  • v21: SWARM panel: drag the title bar, [-] [+] resize, [▲/▼] collapse (all saved)
+--  • v17: CAMERA SENSITIVITY [-] [+]
+--  • v17: 2 languages (ENGLISH / INDONESIA), saved
+--  • v15: SPEED FX (camera shake, speed lines, FOV kick)
+--  • v15: radar zoom 400 / 800 / 1500 (tap radar or press R)
+--  • v15: speed + all settings saved
+--  • v15: NO SIGNAL glitch screen (1 second, with sound) after explosion
+--  • Stays under Luau's 200 top-level locals limit
+--========================================================
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
+
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local PlayerGui = LP:WaitForChild("PlayerGui")
+
+--========================================================
+-- SETTINGS
+--========================================================
+
+local SPEED = 350
+local MIN_SPEED = 50
+local MAX_SPEED = 1500
+local SPEED_STEP = 50
+
+local CAMERA_HEIGHT = 6
+local CAMERA_FOLLOW = 14
+local CAMERA_SENSITIVITY = 0.0035
+local MOUSE_SENSITIVITY = 0.0025
+local CAMERA_SMOOTHING = 40
+local LOCK_SMOOTHING = 9
+local IMPACT_DIST = 6              -- studs: bomb detonates when this close to a locked target
+local RADAR_SIZE = 170
+local RADAR_RATE = 0.2
+local SWEEP_SPEED = 120            -- radar sweep, degrees per second
+local BLIP_FADE = 1.5              -- seconds a blip stays visible after the sweep passes
+local TRAIL_COUNT = 5              -- number of fading lines behind the sweep
+local TRAIL_STEP = 4               -- degrees between trail lines
+local HUD_RATE = 1 / 15
+local MAX_PITCH = math.rad(85)
+
+local MENU_W = 260
+local MENU_H = 370
+local MAX_MENU_BASE_SCALE = 0.8
+
+local MIN_LAYOUT_SCALE = 0.5
+local MAX_LAYOUT_SCALE = 1.6
+local SCALE_STEP = 0.05
+
+local DEFAULT_SCALE = {
+	toggle = 1,
+	menu = 1,
+	telemetry = 0.8,
+	heading = 0.85,
+	speedTape = 0.85,
+	altTape = 0.85,
+	radar = 0.8,
+	bottom = 0.85,
+	pad = 0.8,
+	eject = 0.85,
+	targetInfo = 1,
+	next = 0.85,
+	swarm = 0.85,
+}
+
+local Store = {
+	KEY = "DroneHUDLayout_v1",
+	FILE = "DroneHUD_Layout_v2.json",
+	dirty = false,
+	queued = false,
+}
+local InfoCard = {}
+
+-- v15 user settings (saved together with the HUD layout)
+local Cfg = {
+	friendCheck = true,    -- friends can't be locked
+	fov = 70,              -- camera FOV while flying
+	camDist = 25,          -- camera distance behind the bomb
+	speedFx = true,        -- shake + speed lines + FOV kick
+	noSignal = true,       -- NO SIGNAL glitch screen after the explosion (ON / OFF)
+	sens = 100,            -- camera look sensitivity, %
+	boost = 200,           -- boost power: speed multiplier, %
+	lang = "EN",           -- "EN" or "ID"
+	radarRange = 800,      -- radar range in studs
+	friends = {},          -- userId -> true / false (known friend state)
+	friendAsked = {},
+	-- v20 SWARM STRIKE
+	swarmMax = 8,          -- how many bombs can orbit you (1-8)
+	swarmScatter = 3,      -- seconds the bombs scatter before they attack
+	swarmSpeed = 300,      -- attack speed of the swarm bombs
+	swarmHeight = 10,      -- orbit height above you
+	swarmRadius = 8,       -- orbit radius
+	swarmOrbit = 90,       -- orbit speed, degrees per second
+	swarmSpread = 40,      -- v26: radius of the neat spread ring (tab 2), studs
+	swarmCollapsed = false, -- v21: SWARM panel collapsed (title bar only)
+	-- v22 ORBIT TARGET (tab 3)
+	tgtDist = 30,          -- orbit distance around the target (studs, far = they can't grab it)
+	tgtOrbit = 90,         -- normal orbit speed around the target, degrees per second
+	tgtDelay = 0,          -- seconds of fast spinning before the bombs hit the target
+	-- v22 TORNADO (tab 4)
+	tnRadius = 30,         -- tornado width at the top (studs)
+	tnHeight = 25,         -- tornado height (studs)
+	tnSpeed = 180,         -- tornado spin speed, degrees per second
+	tnDelay = 0,           -- seconds of fast spinning before the bombs hit the target
+	-- v22 extra
+	tgtHeight = 4,         -- ORBIT TARGET (tab 3): ring height above the target (studs)
+	tnLift = 0,            -- TORNADO (tab 4): how high the tornado sits above the target (studs)
+	spinPower = 1500,      -- self-spin of a diving bomb (rad/s), tabs 2 / 3 / 4 / 5
+	-- v23 SCATTER (tab 5)
+	scTime = 3,            -- seconds the bombs spiral outward before they dash at their targets
+	scDist = 60,           -- how far the bombs spread out (studs)
+	scSpin = 360,          -- spiral spin while spreading, degrees per second
+	scSpeed = 300,         -- dash speed at the targets
+	-- v24 "n" attack (tabs 2 / 3 / 4 / 5)
+	nHeight = 80,          -- how high above the target the bomb climbs before it dives (studs)
+	nGap = 1,              -- seconds between two bombs leaving
+}
+
+-- v15 helper table (functions + runtime values live here to save locals)
+local FX = {
+	RADAR_RANGES = { 400, 800, 1500 },
+	STATIC_SOUND_ID = "",  -- optional: put your own static/glitch sound id here, e.g. "rbxassetid://123"
+	speedK = 0,
+	lt = 0,
+	aim = nil,
+	origFov = 70,
+	nsBusy = false,
+	linesOn = false,
+	setters = {},
+	togglers = {},
+	binds = {},
+	boostUntil = 0,
+	boostReadyAt = 0,
+	boostTime = 2,         -- seconds the boost lasts
+	boostCooldown = 5,     -- seconds before the next boost
+	boostText = "",
+	statusActive = false,
+	-- v23: drone tab, touching the target is not enough, the bomb has to disappear
+	hitT = nil,            -- time of the last contact with the target
+	hitAway = Vector3.new(0, 1, 0),
+	autoAtk = false,       -- bomb dives at the locked target by itself after a bounce
+	lastBombPos = nil,
+	hitContact = 0.3,      -- seconds the bomb keeps pushing into the target
+	hitRetreat = 0.4,      -- seconds the bomb bounces away before the next hit
+}
+
+-- v20 SWARM STRIKE state (functions + runtime values live here to save locals)
+local SW = {
+	bombs = {}, angle = 0, lockOn = false, lockRoot = nil, msgUntil = 0,
+	mode = "swarm",       -- v22: "swarm" (tab 2) or "orbit" (tab 3)
+	wantMode = "swarm",   -- mode of the tab that is open (applied when no bomb is flying)
+	spinT0 = 0,
+	spinDur = 3,
+	spinUntil = nil,
+	gapUntil = 0,
+	listBtns = {},
+}
+
+-- v17: language packs (ENGLISH / INDONESIA)
+FX.STR = {
+	EN = {
+		title = "XEVRION HUB",
+		subtitle = "FPV BOMB SYSTEM  •  drag me",
+		standby = "STANDBY",
+		active = "ACTIVE",
+		sec_target = "TARGET",
+		sec_flight = "FLIGHT",
+		sec_lockfilter = "LOCK FILTER",
+		sec_camera = "CAMERA",
+		sec_language = "LANGUAGE",
+		btn_bomb = "💣 SELECT BOMB",
+		btn_bomb_ok = "💣 BOMB SELECTED",
+		btn_bomb_none = "💣 NO BOMB FOUND",
+		btn_drone_off = "🚁 DRONE: OFF",
+		btn_drone_on = "🚁 DRONE: ON",
+		btn_drone_nobomb = "🚁 NO BOMB SELECTED",
+		btn_edit = "🛠 EDIT HUD",
+		speed = "SPEED",
+		tg_friend = "FRIEND CHECK",
+		tg_speedfx = "SPEED FX",
+		tg_nosignal = "NO SIGNAL",
+		st_fov = "FOV",
+		st_camdist = "CAMERA DISTANCE",
+		st_sens = "CAMERA SENSITIVITY",
+		hint = "F Drone  •  L Lock  •  T Next  •  B Boost  •  R Radar\nQ/E Speed  •  WASD Move\nSwipe / hold RMB to look\nSwarm / Orbit / Tornado / Scatter: V Add  •  G Launch / Attack",
+		m_noother = "NO OTHER TARGET",
+		m_switched = "TARGET SWITCHED",
+		m_notarget = "NO TARGET",
+		m_locked = "TARGET LOCKED",
+		m_lockbroken = "LOCK BROKEN",
+		m_targetlost = "TARGET LOST",
+		m_link = "DRONE LINK ESTABLISHED",
+		m_radar = "RADAR RANGE",
+		m_boost = "BOOST!",
+		m_boost_cd = "BOOST NOT READY",
+		lock_lbl = "LOCK",
+		tgt_behind = "TGT BEHIND",
+		rng = "RNG",
+		eject = "EJECT",
+		next = "NEXT ▶",
+		boost = "BOOST",
+		st_boost = "BOOST POWER",
+		lock_on = "LOCK: ON",
+		lock_off = "LOCK: OFF",
+		ns_title = "NO SIGNAL",
+		ns_sub = "VIDEO LINK LOST",
+		ns_a = "[!] LINK ERROR",
+		ns_b = "RECONNECTING...",
+		ed_title = "UI EDITOR",
+		ed_hint = "Drag to move  •  tap to select  •  auto-saved",
+		ed_select = "TAP A BOX TO SELECT",
+		ed_size = "SIZE",
+		ed_reset = "RESET",
+		ed_resetall = "RESET ALL",
+		ed_done = "DONE",
+		el_toggle = "TOGGLE",
+		el_menu = "MENU",
+		el_heading = "HEADING",
+		el_telemetry = "TELEMETRY",
+		el_speedTape = "SPEED TAPE",
+		el_altTape = "ALTITUDE",
+		el_eject = "EJECT",
+		el_bottom = "SPEED / LOCK",
+		el_next = "NEXT TARGET",
+		el_pad = "DIRECTION PAD",
+		el_radar = "RADAR",
+		el_targetInfo = "TARGET INFO",
+		el_boost = "BOOST",
+		sec_swarm = "SWARM STRIKE",
+		btn_swarm_add = "💣 ADD SWARM BOMB",
+		btn_swarm_clear = "🗑 CLEAR SWARM",
+		st_swarm_max = "MAX BOMBS",
+		st_swarm_scatter = "SCATTER TIME",
+		st_swarm_spread = "SPREAD RADIUS",
+		st_swarm_speed = "SWARM SPEED",
+		st_swarm_height = "ORBIT HEIGHT",
+		st_swarm_radius = "ORBIT RADIUS",
+		st_swarm_orbit = "ORBIT SPEED",
+		sw_title = "SWARM",
+		sw_add = "ADD +",
+		sw_clear = "CLEAR",
+		sw_launch = "🚀 LAUNCH",
+		sw_orbit = "ORBIT",
+		sw_launched = "LAUNCHED",
+		sw_tgt = "TGT",
+		sw_added = "BOMB ADDED",
+		sw_full = "SWARM FULL",
+		sw_empty = "NO BOMBS IN ORBIT",
+		sw_go = "SWARM LAUNCHED",
+		sw_hit = "TARGET HIT",
+		sw_back = "TARGET LOST - RETURNING",
+		sw_recall = "SWARM RECALLED",
+		sw_cleared = "SWARM CLEARED",
+		el_swarm = "SWARM PANEL",
+		tab_drone = "DRONE",
+		tab_swarm = "SWARM",
+		tab_orbit = "ORBIT",
+		sec_orbit = "ORBIT TARGET",
+		sec_orbit_pick = "PICK TARGET",
+		btn_orbit_attack = "💥 ATTACK",
+		btn_orbit_refresh = "🔄 REFRESH PLAYERS",
+		st_tgt_dist = "ORBIT DISTANCE",
+		st_tgt_orbit = "ORBIT SPEED",
+		st_tgt_delay = "ATTACK DELAY",
+		or_none = "NO PLAYERS FOUND",
+		or_set = "TARGET SELECTED",
+		or_pick = "PICK A TARGET FIRST",
+		or_spin = "SPINNING UP...",
+		or_busy = "SWARM BUSY - WAIT",
+		tab_tornado = "TORNADO",
+		sec_tornado = "TORNADO",
+		st_tn_radius = "TORNADO WIDTH",
+		st_tn_height = "TORNADO HEIGHT",
+		st_tn_speed = "TORNADO SPEED",
+		st_tn_delay = "ATTACK DELAY",
+		st_spin = "SPIN POWER",
+		tab_scatter = "SCATTER",
+		sec_scatter = "SCATTER STRIKE",
+		st_sc_time = "SCATTER TIME",
+		st_sc_dist = "SCATTER DISTANCE",
+		st_sc_spin = "SCATTER SPIN",
+		st_sc_speed = "ATTACK SPEED",
+		sc_go = "SCATTER LAUNCHED",
+		sc_retry = "NOT EXPLODED - HIT AGAIN",
+		sc_nolock = "SCATTER = RANDOM TARGETS",
+		sc_random = "RANDOM",
+		sc_lost = "TARGET LOST - NEW TARGET",
+		st_n_height = "DIVE HEIGHT",
+		st_n_gap = "BOMB INTERVAL",
+	},
+	ID = {
+		title = "XEVRION HUB",
+		subtitle = "BOM FPV  •  geser aku",
+		standby = "SIAGA",
+		active = "AKTIF",
+		sec_target = "TARGET",
+		sec_flight = "TERBANG",
+		sec_lockfilter = "FILTER KUNCI",
+		sec_camera = "KAMERA",
+		sec_language = "BAHASA",
+		btn_bomb = "💣 PILIH BOM",
+		btn_bomb_ok = "💣 BOM DIPILIH",
+		btn_bomb_none = "💣 BOM TIDAK ADA",
+		btn_drone_off = "🚁 DRONE: MATI",
+		btn_drone_on = "🚁 DRONE: NYALA",
+		btn_drone_nobomb = "🚁 BELUM PILIH BOM",
+		btn_edit = "🛠 ATUR HUD",
+		speed = "KECEPATAN",
+		tg_friend = "CEK TEMAN",
+		tg_speedfx = "EFEK KECEPATAN",
+		tg_nosignal = "TANPA SINYAL",
+		st_fov = "FOV",
+		st_camdist = "JARAK KAMERA",
+		st_sens = "SENSITIVITAS KAMERA",
+		hint = "F Drone  •  L Kunci  •  T Berikut  •  B Boost  •  R Radar\nQ/E Kecepatan  •  WASD Gerak\nGeser layar / tahan klik kanan untuk melihat\nSwarm / Orbit / Tornado / Sebar: V Tambah  •  G Luncurkan / Serang",
+		m_noother = "TIDAK ADA TARGET LAIN",
+		m_switched = "TARGET DIGANTI",
+		m_notarget = "TIDAK ADA TARGET",
+		m_locked = "TARGET TERKUNCI",
+		m_lockbroken = "KUNCI PUTUS",
+		m_targetlost = "TARGET HILANG",
+		m_link = "KONEKSI DRONE TERHUBUNG",
+		m_radar = "JANGKAUAN RADAR",
+		m_boost = "BOOST!",
+		m_boost_cd = "BOOST BELUM SIAP",
+		lock_lbl = "KUNCI",
+		tgt_behind = "TARGET DI BELAKANG",
+		rng = "JRK",
+		eject = "KELUAR",
+		next = "BERIKUT ▶",
+		boost = "BOOST",
+		st_boost = "KEKUATAN BOOST",
+		lock_on = "KUNCI: NYALA",
+		lock_off = "KUNCI: MATI",
+		ns_title = "TANPA SINYAL",
+		ns_sub = "KONEKSI VIDEO TERPUTUS",
+		ns_a = "[!] ERROR KONEKSI",
+		ns_b = "MENYAMBUNG ULANG...",
+		ed_title = "EDITOR UI",
+		ed_hint = "Geser untuk pindah  •  tap untuk pilih  •  tersimpan otomatis",
+		ed_select = "TAP KOTAK UNTUK MEMILIH",
+		ed_size = "UKURAN",
+		ed_reset = "ULANG",
+		ed_resetall = "ULANG SEMUA",
+		ed_done = "SELESAI",
+		el_toggle = "TOMBOL BUKA",
+		el_menu = "MENU",
+		el_heading = "ARAH",
+		el_telemetry = "TELEMETRI",
+		el_speedTape = "PITA KECEPATAN",
+		el_altTape = "KETINGGIAN",
+		el_eject = "KELUAR",
+		el_bottom = "KECEPATAN / KUNCI",
+		el_next = "TARGET BERIKUT",
+		el_pad = "PAD ARAH",
+		el_radar = "RADAR",
+		el_targetInfo = "INFO TARGET",
+		el_boost = "BOOST",
+		sec_swarm = "SWARM STRIKE",
+		btn_swarm_add = "💣 TAMBAH BOM SWARM",
+		btn_swarm_clear = "🗑 KOSONGKAN SWARM",
+		st_swarm_max = "MAKS BOM",
+		st_swarm_scatter = "WAKTU PENCAR",
+		st_swarm_spread = "RADIUS PENCAR",
+		st_swarm_speed = "KECEPATAN SWARM",
+		st_swarm_height = "TINGGI ORBIT",
+		st_swarm_radius = "RADIUS ORBIT",
+		st_swarm_orbit = "KECEPATAN ORBIT",
+		sw_title = "SWARM",
+		sw_add = "TAMBAH +",
+		sw_clear = "HAPUS",
+		sw_launch = "🚀 LUNCURKAN",
+		sw_orbit = "ORBIT",
+		sw_launched = "MELUNCUR",
+		sw_tgt = "TGT",
+		sw_added = "BOM DITAMBAH",
+		sw_full = "SWARM PENUH",
+		sw_empty = "TIDAK ADA BOM DI ORBIT",
+		sw_go = "SWARM DILUNCURKAN",
+		sw_hit = "TARGET KENA",
+		sw_back = "TARGET HILANG - KEMBALI",
+		sw_recall = "SWARM DITARIK KEMBALI",
+		sw_cleared = "SWARM DIKOSONGKAN",
+		el_swarm = "PANEL SWARM",
+		tab_drone = "DRONE",
+		tab_swarm = "SWARM",
+		tab_orbit = "ORBIT",
+		sec_orbit = "ORBIT TARGET",
+		sec_orbit_pick = "PILIH TARGET",
+		btn_orbit_attack = "💥 SERANG",
+		btn_orbit_refresh = "🔄 MUAT ULANG PEMAIN",
+		st_tgt_dist = "JARAK ORBIT",
+		st_tgt_orbit = "KECEPATAN ORBIT",
+		st_tgt_delay = "JEDA SERANG",
+		or_none = "PEMAIN TIDAK ADA",
+		or_set = "TARGET DIPILIH",
+		or_pick = "PILIH TARGET DULU",
+		or_spin = "MEMUTAR CEPAT...",
+		or_busy = "SWARM SEDANG JALAN",
+		tab_tornado = "TORNADO",
+		sec_tornado = "TORNADO",
+		st_tn_radius = "LEBAR TORNADO",
+		st_tn_height = "TINGGI TORNADO",
+		st_tn_speed = "KECEPATAN TORNADO",
+		st_tn_delay = "JEDA SERANG",
+		st_spin = "KEKUATAN PUTAR",
+		tab_scatter = "SEBAR",
+		sec_scatter = "SERANGAN SEBAR",
+		st_sc_time = "WAKTU SEBAR",
+		st_sc_dist = "JARAK SEBAR",
+		st_sc_spin = "PUTARAN SEBAR",
+		st_sc_speed = "KECEPATAN SERANG",
+		sc_go = "BOM DISEBAR",
+		sc_retry = "BELUM MELEDAK - HANTAM LAGI",
+		sc_nolock = "SEBAR = TARGET ACAK",
+		sc_random = "ACAK",
+		sc_lost = "TARGET HILANG - TARGET BARU",
+		st_n_height = "TINGGI TERBANG",
+		st_n_gap = "JEDA ANTAR BOM",
+	},
+}
+
+function FX.L(key)
+	local pack = FX.STR[Cfg.lang] or FX.STR.EN
+	return pack[key] or FX.STR.EN[key] or key
+end
+
+-- binds a label's text to a language key (or to a function) so it follows the language
+function FX.tr(obj, key, fn)
+	table.insert(FX.binds, { obj = obj, key = key, fn = fn })
+	obj.Text = fn and fn() or FX.L(key)
+	return obj
+end
+
+function FX.elName(id, fallback)
+	local pack = FX.STR[Cfg.lang] or FX.STR.EN
+	return pack["el_" .. tostring(id)] or fallback or tostring(id)
+end
+
+function FX.applyLang()
+	for _, e in ipairs(FX.binds) do
+		e.obj.Text = e.fn and e.fn() or FX.L(e.key)
+	end
+
+	if FX.onLang then
+		FX.onLang()
+	end
+end
+
+function FX.collectSettings()
+	return {
+		speed = SPEED,
+		fov = Cfg.fov,
+		camDist = Cfg.camDist,
+		radarRange = Cfg.radarRange,
+		friendCheck = Cfg.friendCheck,
+		speedFx = Cfg.speedFx,
+		noSignal = Cfg.noSignal,
+		sens = Cfg.sens,
+		boost = Cfg.boost,
+		lang = Cfg.lang,
+		swarmMax = Cfg.swarmMax,
+		swarmScatter = Cfg.swarmScatter,
+		swarmSpeed = Cfg.swarmSpeed,
+		swarmHeight = Cfg.swarmHeight,
+		swarmRadius = Cfg.swarmRadius,
+		swarmOrbit = Cfg.swarmOrbit,
+		swarmSpread = Cfg.swarmSpread,
+		swarmCollapsed = Cfg.swarmCollapsed,
+		tgtDist = Cfg.tgtDist,
+		tgtOrbit = Cfg.tgtOrbit,
+		tgtDelay = Cfg.tgtDelay,
+		tnRadius = Cfg.tnRadius,
+		tnHeight = Cfg.tnHeight,
+		tnSpeed = Cfg.tnSpeed,
+		tnDelay = Cfg.tnDelay,
+		tgtHeight = Cfg.tgtHeight,
+		tnLift = Cfg.tnLift,
+		spinPower = Cfg.spinPower,
+		scTime = Cfg.scTime,
+		scDist = Cfg.scDist,
+		scSpin = Cfg.scSpin,
+		scSpeed = Cfg.scSpeed,
+		nHeight = Cfg.nHeight,
+		ver = 25,
+		nGap = Cfg.nGap,
+	}
+end
+
+--========================================================
+-- STATE
+--========================================================
+
+local droneActive = false
+local bombFlying = false
+local selectedBomb = nil
+local editMode = false
+local selectedId = nil
+
+local forward = false
+local backward = false
+local left = false
+local right = false
+
+local yaw = 0
+local pitch = 0
+local targetYaw = 0
+local targetPitch = 0
+
+local cameraTouch = nil
+local rightMouseDown = false
+
+local flightStart = 0
+local lastPosition = nil
+local lastUpdate = os.clock()
+local maxAltitude = 0
+
+local camFocus = Vector3.zero
+local camReady = false
+
+local lockEnabled = false
+local lockRoot = nil
+local contacts = {}
+local nextRadarScan = 0
+local nextHudUpdate = 0
+local messageUntil = 0
+local sweepAngle = 0
+local baseScale = 1
+
+local ELEMENTS = {}      -- id -> { name, frame, anchor, defPos, setScale }
+local layout = {}        -- id -> { x, y, s }  (only elements the player changed)
+local handles = {}       -- id -> editor handle frame
+local dragMoved = {}     -- id -> true if last drag actually moved
+local drag = nil
+local editLayer = nil    -- full-screen editor canvas (assigned later)
+
+-- forward declarations
+local changeSpeed, setLock, stopDrone, startDrone, showMessage, refreshLockUI
+local setMenuOpen, applyElement, scheduleSave, setEditMode, selectElement, updateEditorPanel
+local setStatus
+
+--========================================================
+-- CLEAN UP OLD COPIES (prevents duplicates if re-run)
+--========================================================
+
+do
+	for _, name in ipairs({ "DroneBombSystem", "XEVRION_HUB", "DroneLockReticle", "DroneSpeedFx", "DroneNoSignal", "DroneSwarmFx" }) do
+		local old = PlayerGui:FindFirstChild(name)
+		if old then
+			old:Destroy()
+		end
+	end
+
+	for _, inst in ipairs(SoundService:GetChildren()) do
+		if inst.Name == "DroneEngine" or string.sub(inst.Name, 1, 8) == "DroneUI_" then
+			inst:Destroy()
+		end
+	end
+end
+
+--========================================================
+-- THEME
+--========================================================
+
+local THEME = {
+	Background = Color3.fromRGB(15, 17, 24),
+	Panel = Color3.fromRGB(30, 34, 46),
+	Track = Color3.fromRGB(42, 47, 62),
+	Accent = Color3.fromRGB(70, 255, 150),
+	Cyan = Color3.fromRGB(0, 210, 255),
+	Danger = Color3.fromRGB(255, 85, 105),
+	Warn = Color3.fromRGB(255, 190, 60),
+	Text = Color3.fromRGB(240, 244, 255),
+	Muted = Color3.fromRGB(140, 149, 172),
+	HUD = Color3.fromRGB(120, 255, 140),
+	OnBase = Color3.fromRGB(22, 64, 44),
+	ErrorBase = Color3.fromRGB(70, 26, 34),
+}
+
+local HUD_GREEN = THEME.HUD
+local HUD_DARK = Color3.fromRGB(4, 14, 8)
+
+local RAINBOW = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 230, 255)),
+	ColorSequenceKeypoint.new(0.33, Color3.fromRGB(90, 255, 140)),
+	ColorSequenceKeypoint.new(0.66, Color3.fromRGB(170, 110, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 230, 255)),
+})
+
+--========================================================
+-- SOUNDS
+--========================================================
+
+local UI_SOUNDS = {
+	Hover = { Id = "rbxasset://sounds/clickfast.wav", Volume = 0.15 },
+	Click = { Id = "rbxasset://sounds/button.wav", Volume = 0.45 },
+	Open = { Id = "rbxasset://sounds/electronicpingshort.wav", Volume = 0.5 },
+	Close = { Id = "rbxasset://sounds/snap.mp3", Volume = 0.45 },
+	On = { Id = "rbxasset://sounds/switch.wav", Volume = 0.5, Speed = 1.15 },
+	Off = { Id = "rbxasset://sounds/switch.wav", Volume = 0.5, Speed = 0.85 },
+	Error = { Id = "rbxasset://sounds/switch.wav", Volume = 0.5, Speed = 0.6 },
+}
+
+local uiSounds = {}
+
+for name, data in pairs(UI_SOUNDS) do
+	local s = Instance.new("Sound")
+	s.Name = "DroneUI_" .. name
+	s.SoundId = data.Id
+	s.Volume = data.Volume
+	s.PlaybackSpeed = data.Speed or 1
+	s.Parent = SoundService
+	uiSounds[name] = s
+end
+
+local droneSound = Instance.new("Sound")
+droneSound.Name = "DroneEngine"
+droneSound.SoundId = "rbxassetid://9118828562"
+droneSound.Looped = true
+droneSound.Volume = 0.5
+droneSound.Parent = SoundService
+
+local function playUI(name)
+	local s = uiSounds[name]
+	if s then
+		pcall(function()
+			SoundService:PlayLocalSound(s)
+		end)
+	end
+end
+
+--========================================================
+-- HELPERS
+--========================================================
+
+local function tween(obj, duration, props, style, direction)
+	local t = TweenService:Create(
+		obj,
+		TweenInfo.new(
+			duration,
+			style or Enum.EasingStyle.Quint,
+			direction or Enum.EasingDirection.Out
+		),
+		props
+	)
+	t:Play()
+	return t
+end
+
+local function addCorner(obj, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius)
+	c.Parent = obj
+	return c
+end
+
+local function addStroke(obj, color, thickness, transparency)
+	local s = Instance.new("UIStroke")
+	s.Color = color
+	s.Thickness = thickness
+	s.Transparency = transparency or 0
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = obj
+	return s
+end
+
+local function wrapAngle(a)
+	return (a + math.pi) % (2 * math.pi) - math.pi
+end
+
+local function isPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+--========================================================
+-- GUI ROOT
+--========================================================
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "XEVRION_HUB"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = false -- keeps the HUD below the Roblox top bar
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = PlayerGui
+
+local function getViewport()
+	local s = gui.AbsoluteSize
+	if s.X < 1 or s.Y < 1 then
+		return Camera.ViewportSize
+	end
+	return s
+end
+
+--========================================================
+-- LAYOUT REGISTRY
+--========================================================
+
+local function scaleOf(id)
+	local L = layout[id]
+	if L then
+		return L.s
+	end
+	return DEFAULT_SCALE[id] or 1
+end
+
+local function register(id, name, frame, setScale)
+	if not setScale then
+		local sc = frame:FindFirstChild("LayoutScale")
+		if not sc then
+			sc = Instance.new("UIScale")
+			sc.Name = "LayoutScale"
+			sc.Parent = frame
+		end
+		setScale = function(s)
+			sc.Scale = s
+		end
+	end
+
+	ELEMENTS[id] = {
+		name = name,
+		frame = frame,
+		anchor = frame.AnchorPoint,
+		defPos = frame.Position,
+		setScale = setScale,
+	}
+end
+
+function applyElement(id)
+	local e = ELEMENTS[id]
+	if not e then
+		return
+	end
+
+	local L = layout[id]
+
+	if L then
+		e.frame.Position = UDim2.fromScale(L.x, L.y)
+	else
+		e.frame.Position = e.defPos
+	end
+
+	e.setScale(scaleOf(id))
+end
+
+local function applyAll()
+	for id in pairs(ELEMENTS) do
+		applyElement(id)
+	end
+	updateEditorPanel()
+end
+
+-- makes sure a layout entry exists, copying the current on-screen position
+local function ensureLayout(id)
+	if layout[id] then
+		return layout[id]
+	end
+
+	local e = ELEMENTS[id]
+	local origin = editLayer.AbsolutePosition
+	local vp = editLayer.AbsoluteSize
+	local p = e.frame.AbsolutePosition - origin + e.frame.AbsoluteSize * e.anchor
+
+	layout[id] = {
+		x = math.clamp(p.X / math.max(vp.X, 1), 0, 1),
+		y = math.clamp(p.Y / math.max(vp.Y, 1), 0, 1),
+		s = scaleOf(id),
+	}
+
+	return layout[id]
+end
+
+--========================================================
+-- DRAG SYSTEM (shared by menu header, toggle and editor boxes)
+--========================================================
+
+local function beginDrag(id, input)
+	local L = ensureLayout(id)
+
+	dragMoved[id] = false
+
+	drag = {
+		id = id,
+		input = input,
+		start = Vector2.new(input.Position.X, input.Position.Y),
+		x0 = L.x,
+		y0 = L.y,
+		moved = false,
+	}
+end
+
+UIS.InputChanged:Connect(function(input)
+	if not drag then
+		return
+	end
+
+	local isMouse = drag.input.UserInputType == Enum.UserInputType.MouseButton1
+
+	if input ~= drag.input
+		and not (isMouse and input.UserInputType == Enum.UserInputType.MouseMovement) then
+		return
+	end
+
+	local d = Vector2.new(input.Position.X, input.Position.Y) - drag.start
+
+	if not drag.moved then
+		if d.Magnitude < 4 then
+			return
+		end
+
+		drag.moved = true
+		dragMoved[drag.id] = true
+	end
+
+	local vp = getViewport()
+	local L = layout[drag.id]
+
+	L.x = math.clamp(drag.x0 + d.X / vp.X, 0, 1)
+	L.y = math.clamp(drag.y0 + d.Y / vp.Y, 0, 1)
+
+	applyElement(drag.id)
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if not drag then
+		return
+	end
+
+	local isMouse = drag.input.UserInputType == Enum.UserInputType.MouseButton1
+
+	if input == drag.input or (isMouse and input.UserInputType == Enum.UserInputType.MouseButton1) then
+		if drag.moved then
+			scheduleSave()
+		end
+
+		drag = nil
+	end
+end)
+
+--========================================================
+-- LAYOUT + SETTINGS SAVE (automatic)
+-- 1) executor file system (writefile / readfile)
+-- 2) LocalStorageService as a second copy / fallback
+-- Every move, resize, setting change, reset and DONE press saves by itself.
+--========================================================
+
+function Store.write(text)
+	local saved = false
+
+	if type(writefile) == "function" then
+		local ok, err = pcall(writefile, Store.FILE, text)
+
+		if ok then
+			saved = true
+		else
+			warn("[XEVRION HUB] writefile failed: " .. tostring(err))
+		end
+	end
+
+	local okLs = pcall(function()
+		local store = game:GetService("LocalStorageService")
+		store:SetItem(Store.KEY, text)
+		store:Flush()
+	end)
+
+	return saved or okLs
+end
+
+function Store.read()
+	if type(readfile) == "function" and type(isfile) == "function" then
+		local okExists, exists = pcall(isfile, Store.FILE)
+
+		if okExists and exists then
+			local okRead, raw = pcall(readfile, Store.FILE)
+
+			if okRead and type(raw) == "string" and raw ~= "" then
+				return raw, "file"
+			end
+		end
+	end
+
+	local okLs, raw = pcall(function()
+		return game:GetService("LocalStorageService"):GetItem(Store.KEY)
+	end)
+
+	if okLs and type(raw) == "string" and raw ~= "" then
+		return raw, "LocalStorageService"
+	end
+
+	return nil, nil
+end
+
+function scheduleSave()
+	Store.dirty = true
+
+	if Store.queued then
+		return
+	end
+
+	Store.queued = true
+
+	task.delay(0.4, function()
+		Store.queued = false
+
+		local payload = {}
+		local count = 0
+
+		for id, L in pairs(layout) do
+			payload[id] = { x = L.x, y = L.y, s = L.s }
+			count += 1
+		end
+
+		payload._settings = FX.collectSettings()
+
+		local okJson, json = pcall(function()
+			return game:GetService("HttpService"):JSONEncode(payload)
+		end)
+
+		if not okJson then
+			warn("[XEVRION HUB] could not encode layout: " .. tostring(json))
+			return
+		end
+
+		if Store.write(json) then
+			print("[XEVRION HUB] layout + settings saved (" .. count .. " elements)")
+		else
+			warn("[XEVRION HUB] save failed: no storage available")
+		end
+	end)
+end
+
+--========================================================
+-- TOGGLE BUTTON
+--========================================================
+
+local toggle = Instance.new("TextButton")
+toggle.Name = "Toggle"
+toggle.Size = UDim2.fromOffset(58, 58)
+toggle.AnchorPoint = Vector2.new(0.5, 0.5)
+toggle.Position = UDim2.fromOffset(15 + 29, 15 + 29)
+toggle.BackgroundColor3 = THEME.Background
+toggle.BorderSizePixel = 0
+toggle.Text = ""
+toggle.AutoButtonColor = false
+toggle.ZIndex = 200
+toggle.Parent = gui
+
+addCorner(toggle, 18)
+
+local toggleGradient = Instance.new("UIGradient")
+toggleGradient.Color = RAINBOW
+toggleGradient.Parent = addStroke(toggle, Color3.new(1, 1, 1), 2.5, 0)
+
+local toggleScale = Instance.new("UIScale")
+toggleScale.Parent = toggle
+
+-- LOGO (image asset). If the image stays blank, the ID is probably a
+-- Decal ID: replace the number with the Image ID of that decal.
+local toggleIcon = Instance.new("ImageLabel")
+toggleIcon.Name = "Logo"
+toggleIcon.Size = UDim2.fromScale(0.72, 0.72)
+toggleIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+toggleIcon.Position = UDim2.fromScale(0.5, 0.5)
+toggleIcon.BackgroundTransparency = 1
+toggleIcon.Image = "rbxassetid://124298982787093"
+toggleIcon.ScaleType = Enum.ScaleType.Fit
+toggleIcon.ImageColor3 = Color3.fromRGB(200, 205, 220)
+toggleIcon.ZIndex = 201
+toggleIcon.Parent = toggle
+
+register("toggle", "TOGGLE", toggle, function(s)
+	toggle.Size = UDim2.fromOffset(58 * s, 58 * s)
+end)
+
+--========================================================
+-- MENU
+--========================================================
+
+local menu = Instance.new("CanvasGroup")
+menu.Name = "Menu"
+menu.Size = UDim2.fromOffset(MENU_W, MENU_H)
+menu.Position = UDim2.fromOffset(15, 85)
+menu.BackgroundColor3 = THEME.Background
+menu.BorderSizePixel = 0
+menu.Active = true
+menu.GroupTransparency = 1
+menu.ZIndex = 200
+menu.Parent = gui
+
+addCorner(menu, 20)
+
+local menuGradient = Instance.new("UIGradient")
+menuGradient.Color = RAINBOW
+menuGradient.Parent = addStroke(menu, Color3.new(1, 1, 1), 2, 0)
+
+local menuScale = Instance.new("UIScale")
+menuScale.Parent = menu
+
+-- header + status pill + close button (only needed locally)
+do
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 56)
+	header.BackgroundColor3 = Color3.new(1, 1, 1)
+	header.BorderSizePixel = 0
+	header.Active = true
+	header.Parent = menu
+
+	local headerGradient = Instance.new("UIGradient")
+	headerGradient.Color = ColorSequence.new(
+		Color3.fromRGB(36, 42, 60),
+		Color3.fromRGB(20, 24, 34)
+	)
+	headerGradient.Parent = header
+
+	local headerLine = Instance.new("Frame")
+	headerLine.Size = UDim2.new(1, 0, 0, 2)
+	headerLine.Position = UDim2.new(0, 0, 1, -2)
+	headerLine.BackgroundColor3 = Color3.new(1, 1, 1)
+	headerLine.BorderSizePixel = 0
+	headerLine.Parent = header
+
+	local headerLineGradient = Instance.new("UIGradient")
+	headerLineGradient.Color = RAINBOW
+	headerLineGradient.Parent = headerLine
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Size = UDim2.fromOffset(150, 20)
+	titleLabel.Position = UDim2.fromOffset(16, 10)
+	titleLabel.BackgroundTransparency = 1
+	FX.tr(titleLabel, "title")
+	titleLabel.TextColor3 = THEME.Text
+	titleLabel.TextSize = 15
+	titleLabel.Font = Enum.Font.GothamBlack
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.Parent = header
+
+	local subtitleLabel = Instance.new("TextLabel")
+	subtitleLabel.Size = UDim2.fromOffset(150, 14)
+	subtitleLabel.Position = UDim2.fromOffset(16, 31)
+	subtitleLabel.BackgroundTransparency = 1
+	FX.tr(subtitleLabel, "subtitle")
+	subtitleLabel.TextColor3 = THEME.Muted
+	subtitleLabel.TextSize = 10
+	subtitleLabel.Font = Enum.Font.GothamMedium
+	subtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	subtitleLabel.Parent = header
+
+	local statusPill = Instance.new("Frame")
+	statusPill.Size = UDim2.fromOffset(86, 22)
+	statusPill.Position = UDim2.new(1, -134, 0, 17)
+	statusPill.BackgroundColor3 = THEME.Background
+	statusPill.BorderSizePixel = 0
+	statusPill.Parent = header
+
+	addCorner(statusPill, 11)
+	addStroke(statusPill, THEME.Muted, 1, 0.7)
+
+	local statusDot = Instance.new("Frame")
+	statusDot.Size = UDim2.fromOffset(8, 8)
+	statusDot.Position = UDim2.fromOffset(10, 7)
+	statusDot.BackgroundColor3 = THEME.Danger
+	statusDot.BorderSizePixel = 0
+	statusDot.Parent = statusPill
+
+	addCorner(statusDot, 4)
+
+	TweenService:Create(
+		statusDot,
+		TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ BackgroundTransparency = 0.6 }
+	):Play()
+
+	local statusText = Instance.new("TextLabel")
+	statusText.Size = UDim2.new(1, -26, 1, 0)
+	statusText.Position = UDim2.fromOffset(24, 0)
+	statusText.BackgroundTransparency = 1
+	statusText.Text = FX.L("standby")
+	statusText.TextColor3 = THEME.Muted
+	statusText.TextSize = 10
+	statusText.Font = Enum.Font.GothamBold
+	statusText.TextXAlignment = Enum.TextXAlignment.Left
+	statusText.Parent = statusPill
+
+	function setStatus(active)
+		FX.statusActive = active
+		statusText.Text = active and FX.L("active") or FX.L("standby")
+
+		tween(statusDot, 0.25, {
+			BackgroundColor3 = active and THEME.Accent or THEME.Danger,
+		})
+
+		tween(statusText, 0.25, {
+			TextColor3 = active and THEME.Accent or THEME.Muted,
+		})
+	end
+
+	local closeButton = Instance.new("TextButton")
+	closeButton.Size = UDim2.fromOffset(28, 28)
+	closeButton.Position = UDim2.new(1, -40, 0, 14)
+	closeButton.BackgroundColor3 = THEME.Panel
+	closeButton.BorderSizePixel = 0
+	closeButton.AutoButtonColor = false
+	closeButton.Text = "✕"
+	closeButton.TextColor3 = THEME.Text
+	closeButton.TextSize = 13
+	closeButton.Font = Enum.Font.GothamBold
+	closeButton.Parent = header
+
+	addCorner(closeButton, 9)
+
+	closeButton.MouseEnter:Connect(function()
+		playUI("Hover")
+		tween(closeButton, 0.15, { BackgroundColor3 = THEME.Danger })
+	end)
+
+	closeButton.MouseLeave:Connect(function()
+		tween(closeButton, 0.2, { BackgroundColor3 = THEME.Panel })
+	end)
+
+	closeButton.Activated:Connect(function()
+		setMenuOpen(false)
+	end)
+
+	header.InputBegan:Connect(function(input)
+		if isPress(input) then
+			beginDrag("menu", input)
+		end
+	end)
+end
+
+-- v15: the body scrolls, so the menu keeps its size but can hold more rows
+local body = Instance.new("ScrollingFrame")
+body.Name = "Body"
+body.BackgroundTransparency = 1
+body.BorderSizePixel = 0
+body.Position = UDim2.fromOffset(0, 56)
+body.Size = UDim2.new(1, 0, 1, -56)
+body.CanvasSize = UDim2.new(0, 0, 0, 0)
+body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+body.ScrollingDirection = Enum.ScrollingDirection.Y
+body.ScrollBarThickness = 3
+body.ScrollBarImageColor3 = THEME.Cyan
+body.Parent = menu
+
+do
+	local bodyPadding = Instance.new("UIPadding")
+	bodyPadding.PaddingTop = UDim.new(0, 12)
+	bodyPadding.PaddingBottom = UDim.new(0, 14)
+	bodyPadding.PaddingLeft = UDim.new(0, 14)
+	bodyPadding.PaddingRight = UDim.new(0, 14)
+	bodyPadding.Parent = body
+
+	local bodyList = Instance.new("UIListLayout")
+	bodyList.Padding = UDim.new(0, 8)
+	bodyList.SortOrder = Enum.SortOrder.LayoutOrder
+	bodyList.Parent = body
+end
+
+local function createSectionLabel(text, order)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, 0, 0, 14)
+	l.BackgroundTransparency = 1
+	if type(text) == "table" then
+		FX.tr(l, text.key)
+	else
+		l.Text = text
+	end
+	l.TextColor3 = THEME.Muted
+	l.TextSize = 11
+	l.Font = Enum.Font.GothamBold
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.LayoutOrder = order
+	l.Parent = body
+	return l
+end
+
+local buttonStyles = {}
+
+local function applyButtonStyle(button, base, accent, strokeTransparency)
+	local style = buttonStyles[button]
+
+	style.Base = base
+	style.StrokeTransparency = strokeTransparency or 0.75
+
+	tween(button, 0.25, { BackgroundColor3 = base })
+	tween(style.Stroke, 0.25, {
+		Color = accent,
+		Transparency = style.StrokeTransparency,
+	})
+end
+
+local function createButton(text, parent)
+	local b = Instance.new("TextButton")
+
+	b.Size = UDim2.new(1, 0, 0, 42)
+	b.BackgroundColor3 = THEME.Panel
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = false
+	if type(text) == "table" then
+		FX.tr(b, text.key)
+	else
+		b.Text = text
+	end
+	b.TextColor3 = THEME.Text
+	b.TextSize = 14
+	b.Font = Enum.Font.GothamBold
+	b.Parent = parent
+
+	addCorner(b, 12)
+
+	local s = addStroke(b, THEME.Cyan, 1.5, 0.75)
+
+	local style = {
+		Base = THEME.Panel,
+		Stroke = s,
+		StrokeTransparency = 0.75,
+	}
+
+	buttonStyles[b] = style
+
+	b.MouseEnter:Connect(function()
+		playUI("Hover")
+		tween(b, 0.15, { BackgroundColor3 = style.Base:Lerp(Color3.new(1, 1, 1), 0.1) })
+		tween(s, 0.15, { Transparency = 0.2 })
+	end)
+
+	b.MouseLeave:Connect(function()
+		tween(b, 0.2, { BackgroundColor3 = style.Base })
+		tween(s, 0.2, { Transparency = style.StrokeTransparency })
+	end)
+
+	b.MouseButton1Down:Connect(function()
+		tween(b, 0.08, { BackgroundColor3 = style.Base:Lerp(Color3.new(0, 0, 0), 0.25) })
+	end)
+
+	b.MouseButton1Up:Connect(function()
+		tween(b, 0.2, { BackgroundColor3 = style.Base:Lerp(Color3.new(1, 1, 1), 0.1) })
+	end)
+
+	b.Activated:Connect(function()
+		playUI("Click")
+	end)
+
+	return b
+end
+
+-- v16: stepper row: [-]  LABEL value  [+]   (tap only, so scrolling can never change it)
+-- Returns a setter(value, silent), same as the old slider.
+function FX.stepper(label, min, max, step, value, fmt, order, onChange)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 42)
+	row.BackgroundTransparency = 1
+	row.LayoutOrder = order
+	row.Parent = body
+
+	local minus = createButton("−", row)
+	minus.Size = UDim2.new(0, 52, 1, 0)
+	minus.TextSize = 22
+
+	local holder = Instance.new("Frame")
+	holder.Size = UDim2.new(1, -116, 1, 0)
+	holder.Position = UDim2.fromOffset(58, 0)
+	holder.BackgroundColor3 = THEME.Background
+	holder.BorderSizePixel = 0
+	holder.Parent = row
+
+	addCorner(holder, 12)
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 14)
+	title.Position = UDim2.fromOffset(0, 5)
+	title.BackgroundTransparency = 1
+	FX.tr(title, label)
+	title.TextColor3 = THEME.Muted
+	title.TextSize = 10
+	title.Font = Enum.Font.GothamBold
+	title.Parent = holder
+
+	local valueLabel = Instance.new("TextLabel")
+	valueLabel.Size = UDim2.new(1, 0, 0, 18)
+	valueLabel.Position = UDim2.fromOffset(0, 19)
+	valueLabel.BackgroundTransparency = 1
+	valueLabel.TextColor3 = THEME.Accent
+	valueLabel.TextSize = 15
+	valueLabel.Font = Enum.Font.GothamBlack
+	valueLabel.Parent = holder
+
+	local plus = createButton("+", row)
+	plus.Size = UDim2.new(0, 52, 1, 0)
+	plus.Position = UDim2.new(1, -52, 0, 0)
+	plus.TextSize = 22
+
+	local current = value
+
+	local function setValue(v, silent)
+		v = math.clamp(math.floor(v / step + 0.5) * step, min, max)
+		current = v
+		valueLabel.Text = fmt(v)
+
+		if not silent then
+			onChange(v)
+		end
+
+		return v
+	end
+
+	minus.Activated:Connect(function()
+		setValue(current - step)
+	end)
+
+	plus.Activated:Connect(function()
+		setValue(current + step)
+	end)
+
+	setValue(value, true)
+
+	return setValue
+end
+
+-- v15: ON/OFF toggle button bound to Cfg[key]
+function FX.toggle(key, label, order)
+	local b = createButton("", body)
+	b.Size = UDim2.new(1, 0, 0, 36)
+	b.LayoutOrder = order
+
+	local function refresh()
+		local on = Cfg[key]
+
+		b.Text = FX.L(label) .. (on and ": ON" or ": OFF")
+
+		if on then
+			applyButtonStyle(b, THEME.OnBase, THEME.Accent, 0.3)
+		else
+			applyButtonStyle(b, THEME.Panel, THEME.Cyan, 0.75)
+		end
+	end
+
+	b.Activated:Connect(function()
+		Cfg[key] = not Cfg[key]
+		refresh()
+		scheduleSave()
+	end)
+
+	refresh()
+	FX.togglers[key] = refresh
+end
+
+-- v22: 3 tabs  (1 DRONE  /  2 SWARM  /  3 ORBIT TARGET)
+-- every row is assigned to a tab by its LayoutOrder:  1-21 and 99 = DRONE,  22-39 = SWARM,  40-98 = ORBIT
+FX.tab = 1
+FX.tabButtons = {}
+
+function FX.tabOf(order)
+	if order == 0 then
+		return 0
+	end
+
+	if order <= 21 or order == 99 then
+		return 1
+	end
+
+	if order <= 39 then
+		return 2
+	end
+
+	if order <= 59 then
+		return 3
+	end
+
+	if order <= 79 then
+		return 4
+	end
+
+	return 5
+end
+
+function FX.applyTab()
+	for _, child in ipairs(body:GetChildren()) do
+		if child:IsA("GuiObject") then
+			local t = FX.tabOf(child.LayoutOrder)
+
+			child.Visible = (t == 0) or (t == FX.tab)
+		end
+	end
+
+	for i, b in ipairs(FX.tabButtons) do
+		if i == FX.tab then
+			applyButtonStyle(b, THEME.OnBase, THEME.Accent, 0.3)
+		else
+			applyButtonStyle(b, THEME.Panel, THEME.Cyan, 0.75)
+		end
+	end
+
+	body.CanvasPosition = Vector2.new(0, 0)
+end
+
+function FX.setTab(i)
+	FX.tab = i
+	FX.applyTab()
+
+	SW.wantMode = (i == 3 and "orbit") or (i == 4 and "tornado") or (i == 5 and "scatter") or "swarm"
+
+	if SW.syncMode then
+		SW.syncMode()
+	end
+
+	if i >= 3 and SW.buildList then
+		SW.buildList()
+	end
+end
+
+do
+	local bar = Instance.new("Frame")
+	bar.Name = "Tabs"
+	bar.Size = UDim2.new(1, 0, 0, 34)
+	bar.BackgroundTransparency = 1
+	bar.LayoutOrder = 0
+	bar.Parent = body
+
+	for i, key in ipairs({ "tab_drone", "tab_swarm", "tab_orbit", "tab_tornado", "tab_scatter" }) do
+		local b = createButton({ key = key }, bar)
+
+		b.Size = UDim2.new(1 / 5, -3, 1, 0)
+		b.Position = UDim2.new((i - 1) / 5, i - 1, 0, 0)
+		b.TextSize = 9
+
+		b.Activated:Connect(function()
+			if FX.tab ~= i then
+				FX.setTab(i)
+			end
+		end)
+
+		FX.tabButtons[i] = b
+	end
+end
+
+createSectionLabel({ key = "sec_target" }, 1)
+
+local bombButton = createButton(FX.L("btn_bomb"), body)
+bombButton.LayoutOrder = 2
+
+createSectionLabel({ key = "sec_flight" }, 3)
+
+local droneButton = createButton(FX.L("btn_drone_off"), body)
+droneButton.LayoutOrder = 4
+
+-- EDIT HUD button (only its connection is needed later)
+do
+	local editButton = createButton({ key = "btn_edit" }, body)
+	editButton.LayoutOrder = 5
+
+	editButton.Activated:Connect(function()
+		if droneActive then
+			return
+		end
+
+		setEditMode(true)
+	end)
+end
+
+local speedRow = Instance.new("Frame")
+speedRow.Size = UDim2.new(1, 0, 0, 42)
+speedRow.BackgroundTransparency = 1
+speedRow.LayoutOrder = 6
+speedRow.Parent = body
+
+local speedDown = createButton("−", speedRow)
+speedDown.Size = UDim2.new(0, 52, 1, 0)
+speedDown.TextSize = 22
+
+local speedLabel
+
+do
+	local speedLabelHolder = Instance.new("Frame")
+	speedLabelHolder.Size = UDim2.new(1, -116, 1, 0)
+	speedLabelHolder.Position = UDim2.fromOffset(58, 0)
+	speedLabelHolder.BackgroundColor3 = THEME.Background
+	speedLabelHolder.BorderSizePixel = 0
+	speedLabelHolder.Parent = speedRow
+
+	addCorner(speedLabelHolder, 12)
+
+	speedLabel = Instance.new("TextLabel")
+	speedLabel.Size = UDim2.fromScale(1, 1)
+	speedLabel.BackgroundTransparency = 1
+	speedLabel.Text = FX.L("speed") .. " " .. SPEED
+	speedLabel.TextColor3 = THEME.Accent
+	speedLabel.TextSize = 15
+	speedLabel.Font = Enum.Font.GothamBlack
+	speedLabel.Parent = speedLabelHolder
+end
+
+local speedUp = createButton("+", speedRow)
+speedUp.Size = UDim2.new(0, 52, 1, 0)
+speedUp.Position = UDim2.new(1, -52, 0, 0)
+speedUp.TextSize = 22
+
+local menuSpeedFill
+
+do
+	local speedTrack = Instance.new("Frame")
+	speedTrack.Size = UDim2.new(1, 0, 0, 6)
+	speedTrack.BackgroundColor3 = THEME.Track
+	speedTrack.BorderSizePixel = 0
+	speedTrack.LayoutOrder = 7
+	speedTrack.Parent = body
+
+	addCorner(speedTrack, 3)
+
+	menuSpeedFill = Instance.new("Frame")
+	menuSpeedFill.Size = UDim2.new(math.clamp(SPEED / MAX_SPEED, 0, 1), 0, 1, 0)
+	menuSpeedFill.BackgroundColor3 = Color3.new(1, 1, 1)
+	menuSpeedFill.BorderSizePixel = 0
+	menuSpeedFill.Parent = speedTrack
+
+	addCorner(menuSpeedFill, 3)
+
+	local menuSpeedGradient = Instance.new("UIGradient")
+	menuSpeedGradient.Color = ColorSequence.new(THEME.Cyan, THEME.Accent)
+	menuSpeedGradient.Parent = menuSpeedFill
+end
+
+-- v16 menu rows: lock filters, camera (+/-), speed fx
+createSectionLabel({ key = "sec_lockfilter" }, 8)
+FX.toggle("friendCheck", "tg_friend", 10)
+
+createSectionLabel({ key = "sec_camera" }, 12)
+
+FX.setters.fov = FX.stepper("st_fov", 40, 110, 5, Cfg.fov, function(v)
+	return string.format("%d°", v)
+end, 13, function(v)
+	Cfg.fov = v
+	scheduleSave()
+end)
+
+FX.setters.camDist = FX.stepper("st_camdist", 10, 60, 5, Cfg.camDist, function(v)
+	return string.format("%d st", v)
+end, 14, function(v)
+	Cfg.camDist = v
+	scheduleSave()
+end)
+
+FX.setters.sens = FX.stepper("st_sens", 20, 300, 10, Cfg.sens, function(v)
+	return string.format("%d%%", v)
+end, 15, function(v)
+	Cfg.sens = v
+	scheduleSave()
+end)
+
+FX.setters.boost = FX.stepper("st_boost", 125, 400, 25, Cfg.boost, function(v)
+	return string.format("%d%%", v)
+end, 16, function(v)
+	Cfg.boost = v
+	scheduleSave()
+end)
+
+FX.toggle("speedFx", "tg_speedfx", 17)
+FX.toggle("noSignal", "tg_nosignal", 18)
+
+-- v17: language buttons (ENGLISH / INDONESIA)
+createSectionLabel({ key = "sec_language" }, 19)
+
+do
+	local langRow = Instance.new("Frame")
+	langRow.Size = UDim2.new(1, 0, 0, 42)
+	langRow.BackgroundTransparency = 1
+	langRow.LayoutOrder = 20
+	langRow.Parent = body
+
+	local enButton = createButton("ENGLISH", langRow)
+	enButton.Size = UDim2.new(0.5, -4, 1, 0)
+
+	local idButton = createButton("INDONESIA", langRow)
+	idButton.Size = UDim2.new(0.5, -4, 1, 0)
+	idButton.Position = UDim2.new(0.5, 4, 0, 0)
+
+	local function paint(button, on)
+		if on then
+			applyButtonStyle(button, THEME.OnBase, THEME.Accent, 0.3)
+		else
+			applyButtonStyle(button, THEME.Panel, THEME.Cyan, 0.75)
+		end
+	end
+
+	function FX.paintLang()
+		paint(enButton, Cfg.lang == "EN")
+		paint(idButton, Cfg.lang == "ID")
+	end
+
+	local function pick(code)
+		if Cfg.lang == code then
+			return
+		end
+
+		Cfg.lang = code
+		FX.applyLang()
+		scheduleSave()
+	end
+
+	enButton.Activated:Connect(function()
+		pick("EN")
+	end)
+
+	idButton.Activated:Connect(function()
+		pick("ID")
+	end)
+
+	FX.paintLang()
+end
+
+do
+	local hintLabel = Instance.new("TextLabel")
+	hintLabel.Size = UDim2.new(1, 0, 0, 72)
+	hintLabel.BackgroundTransparency = 1
+	FX.tr(hintLabel, "hint")
+	hintLabel.TextColor3 = THEME.Muted
+	hintLabel.TextSize = 10
+	hintLabel.Font = Enum.Font.GothamMedium
+	hintLabel.TextWrapped = true
+	hintLabel.TextYAlignment = Enum.TextYAlignment.Top
+	hintLabel.LayoutOrder = 99
+	hintLabel.Parent = body
+end
+
+-- v20 / v22 SWARM STRIKE rows = TAB 2 (the logic is at the end of the script)
+createSectionLabel({ key = "sec_swarm" }, 22)
+
+SW.addButton = createButton(FX.L("btn_swarm_add"), body)
+SW.addButton.LayoutOrder = 23
+
+SW.clearButton = createButton({ key = "btn_swarm_clear" }, body)
+SW.clearButton.LayoutOrder = 24
+
+do
+	local function swarmStep(key, label, min, max, step, order, fmt)
+		FX.setters[key] = FX.stepper(label, min, max, step, Cfg[key], fmt, order, function(v)
+			Cfg[key] = v
+			scheduleSave()
+
+			if SW.refresh then
+				SW.refresh()
+			end
+		end)
+	end
+
+	do
+		local maxSetters = {}
+
+		local function onMax(v)
+			Cfg.swarmMax = v
+			scheduleSave()
+
+			for _, st in ipairs(maxSetters) do
+				st(v, true)
+			end
+
+			if SW.refresh then
+				SW.refresh()
+			end
+		end
+
+		for _, order in ipairs({ 25, 85 }) do
+			table.insert(maxSetters, FX.stepper("st_swarm_max", 1, 8, 1, Cfg.swarmMax, function(v)
+				return string.format("%d", v)
+			end, order, onMax))
+		end
+
+		FX.setters.swarmMax = function(v)
+			for _, st in ipairs(maxSetters) do
+				st(v, true)
+			end
+		end
+	end
+
+	swarmStep("swarmScatter", "st_swarm_scatter", 1, 6, 0.5, 26, function(v)
+		return string.format("%.1f s", v)
+	end)
+
+	swarmStep("swarmSpeed", "st_swarm_speed", 100, 800, 50, 27, function(v)
+		return string.format("%d", v)
+	end)
+
+	swarmStep("swarmHeight", "st_swarm_height", 5, 30, 1, 28, function(v)
+		return string.format("%d st", v)
+	end)
+
+	swarmStep("swarmRadius", "st_swarm_radius", 4, 30, 1, 29, function(v)
+		return string.format("%d st", v)
+	end)
+
+	swarmStep("swarmOrbit", "st_swarm_orbit", 20, 240, 10, 30, function(v)
+		return string.format("%d°/s", v)
+	end)
+
+	-- v26: radius of the neat spread ring (tab 2)
+	swarmStep("swarmSpread", "st_swarm_spread", 15, 100, 5, 31, function(v)
+		return string.format("%d st", v)
+	end)
+
+	-- v22 ORBIT TARGET rows = TAB 3
+	createSectionLabel({ key = "sec_orbit" }, 40)
+
+	SW.addButton2 = createButton(FX.L("btn_swarm_add"), body)
+	SW.addButton2.LayoutOrder = 41
+
+	SW.clearButton2 = createButton({ key = "btn_swarm_clear" }, body)
+	SW.clearButton2.LayoutOrder = 42
+
+	SW.attackButton = createButton({ key = "btn_orbit_attack" }, body)
+	SW.attackButton.LayoutOrder = 43
+
+	createSectionLabel({ key = "sec_orbit_pick" }, 44)
+
+	SW.refreshButton = createButton({ key = "btn_orbit_refresh" }, body)
+	SW.refreshButton.Size = UDim2.new(1, 0, 0, 34)
+	SW.refreshButton.TextSize = 12
+	SW.refreshButton.LayoutOrder = 45
+
+	-- player list: tap a player = that player is the target (no lock needed)
+	SW.listFrame = Instance.new("Frame")
+	SW.listFrame.Name = "TargetList"
+	SW.listFrame.Size = UDim2.new(1, 0, 0, 0)
+	SW.listFrame.AutomaticSize = Enum.AutomaticSize.Y
+	SW.listFrame.BackgroundTransparency = 1
+	SW.listFrame.LayoutOrder = 46
+	SW.listFrame.Parent = body
+
+	do
+		local listLayout = Instance.new("UIListLayout")
+		listLayout.Padding = UDim.new(0, 6)
+		listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		listLayout.Parent = SW.listFrame
+	end
+
+	local function tgtStep(key, label, min, max, step, order, fmt)
+		FX.setters[key] = FX.stepper(label, min, max, step, Cfg[key], fmt, order, function(v)
+			Cfg[key] = v
+			scheduleSave()
+		end)
+	end
+
+	tgtStep("tgtDist", "st_tgt_dist", 30, 60, 5, 47, function(v)
+		return string.format("%d st", v)
+	end)
+
+	tgtStep("tgtOrbit", "st_tgt_orbit", 30, 240, 10, 48, function(v)
+		return string.format("%d°/s", v)
+	end)
+
+	tgtStep("tgtDelay", "st_tgt_delay", 0, 6, 0.5, 49, function(v)
+		return string.format("%.1f s", v)
+	end)
+
+	-- v22 TORNADO rows = TAB 4
+	createSectionLabel({ key = "sec_tornado" }, 60)
+
+	SW.addButton3 = createButton(FX.L("btn_swarm_add"), body)
+	SW.addButton3.LayoutOrder = 61
+
+	SW.clearButton3 = createButton({ key = "btn_swarm_clear" }, body)
+	SW.clearButton3.LayoutOrder = 62
+
+	SW.attackButton3 = createButton({ key = "btn_orbit_attack" }, body)
+	SW.attackButton3.LayoutOrder = 63
+
+	createSectionLabel({ key = "sec_orbit_pick" }, 64)
+
+	SW.refreshButton3 = createButton({ key = "btn_orbit_refresh" }, body)
+	SW.refreshButton3.Size = UDim2.new(1, 0, 0, 34)
+	SW.refreshButton3.TextSize = 12
+	SW.refreshButton3.LayoutOrder = 65
+
+	SW.listFrame4 = Instance.new("Frame")
+	SW.listFrame4.Name = "TornadoList"
+	SW.listFrame4.Size = UDim2.new(1, 0, 0, 0)
+	SW.listFrame4.AutomaticSize = Enum.AutomaticSize.Y
+	SW.listFrame4.BackgroundTransparency = 1
+	SW.listFrame4.LayoutOrder = 66
+	SW.listFrame4.Parent = body
+
+	do
+		local listLayout4 = Instance.new("UIListLayout")
+		listLayout4.Padding = UDim.new(0, 6)
+		listLayout4.SortOrder = Enum.SortOrder.LayoutOrder
+		listLayout4.Parent = SW.listFrame4
+	end
+
+	tgtStep("tnRadius", "st_tn_radius", 20, 60, 5, 67, function(v)
+		return string.format("%d st", v)
+	end)
+
+	tgtStep("tnHeight", "st_tn_height", 10, 50, 5, 68, function(v)
+		return string.format("%d st", v)
+	end)
+
+	tgtStep("tnSpeed", "st_tn_speed", 60, 360, 20, 69, function(v)
+		return string.format("%d°/s", v)
+	end)
+
+	tgtStep("tnDelay", "st_tn_delay", 0, 6, 0.5, 70, function(v)
+		return string.format("%.1f s", v)
+	end)
+
+	-- v22: ORBIT HEIGHT for tab 3 and tab 4
+	tgtStep("tgtHeight", "st_swarm_height", 0, 40, 1, 50, function(v)
+		return string.format("%d st", v)
+	end)
+
+	tgtStep("tnLift", "st_swarm_height", 0, 40, 1, 71, function(v)
+		return string.format("%d st", v)
+	end)
+
+	-- v23 SCATTER rows = TAB 5 (orders 80-98)
+	createSectionLabel({ key = "sec_scatter" }, 80)
+
+	SW.addButton4 = createButton(FX.L("btn_swarm_add"), body)
+	SW.addButton4.LayoutOrder = 81
+
+	SW.clearButton4 = createButton({ key = "btn_swarm_clear" }, body)
+	SW.clearButton4.LayoutOrder = 82
+
+	SW.launchButton4 = createButton({ key = "sw_launch" }, body)
+	SW.launchButton4.LayoutOrder = 83
+
+	tgtStep("scTime", "st_sc_time", 1, 6, 0.5, 84, function(v)
+		return string.format("%.1f s", v)
+	end)
+
+	-- order 85 = MAX BOMBS (shared with tab 2, built above)
+
+	tgtStep("scDist", "st_sc_dist", 30, 150, 10, 86, function(v)
+		return string.format("%d st", v)
+	end)
+
+	tgtStep("scSpin", "st_sc_spin", 90, 720, 30, 87, function(v)
+		return string.format("%d°/s", v)
+	end)
+
+	tgtStep("scSpeed", "st_sc_speed", 100, 800, 50, 88, function(v)
+		return string.format("%d", v)
+	end)
+
+	-- v24: DIVE HEIGHT + BOMB INTERVAL, one shared value shown in tab 2, 3, 4 and 5
+	do
+		local function sharedStep(key, label, min, max, step, orders, fmt)
+			local setters = {}
+
+			local function onChange(v)
+				Cfg[key] = v
+				scheduleSave()
+
+				for _, st in ipairs(setters) do
+					st(v, true)
+				end
+			end
+
+			for _, order in ipairs(orders) do
+				table.insert(setters, FX.stepper(label, min, max, step, Cfg[key], fmt, order, onChange))
+			end
+
+			FX.setters[key] = function(v)
+				for _, st in ipairs(setters) do
+					st(v, true)
+				end
+			end
+		end
+
+		sharedStep("nHeight", "st_n_height", 30, 250, 10, { 32, 52, 73, 90 }, function(v)
+			return string.format("%d st", v)
+		end)
+
+		sharedStep("nGap", "st_n_gap", 0.5, 5, 0.5, { 33, 53, 74, 91 }, function(v)
+			return string.format("%.1f s", v)
+		end)
+	end
+
+	-- v26: SPIN POWER removed (bombs dive straight, no self-spin). Empty setter keeps old saves working.
+	FX.setters.spinPower = function() end
+end
+
+function FX.rootOf(plr)
+	local model = plr.Character
+
+	return model and (
+		model:FindFirstChild("HumanoidRootPart")
+		or model:FindFirstChild("Torso")
+		or model:FindFirstChild("UpperTorso")
+		or model:FindFirstChild("Head")
+	) or nil
+end
+
+-- which player is the current target (orbit mode)
+function SW.selectedPlayer()
+	if SW.lockOn and SW.lockRoot and SW.lockRoot.Parent then
+		return Players:GetPlayerFromCharacter(SW.lockRoot.Parent)
+	end
+
+	return nil
+end
+
+-- colours the list buttons (selected target = red)
+function SW.paintList()
+	local sel = SW.selectedPlayer()
+
+	for btn, plr in pairs(SW.listBtns) do
+		if btn.Parent then
+			if plr == sel then
+				applyButtonStyle(btn, THEME.ErrorBase, THEME.Danger, 0.15)
+			else
+				applyButtonStyle(btn, THEME.Panel, THEME.Cyan, 0.75)
+			end
+		end
+	end
+end
+
+-- rebuilds the player lists of tab 3 and tab 4 (only players that FRIEND CHECK allows)
+function SW.buildList()
+	for btn in pairs(SW.listBtns) do
+		buttonStyles[btn] = nil
+	end
+
+	table.clear(SW.listBtns)
+
+	local frames = { SW.listFrame, SW.listFrame4 }
+
+	for _, frame in ipairs(frames) do
+		for _, c in ipairs(frame:GetChildren()) do
+			if c:IsA("GuiObject") then
+				c:Destroy()
+			end
+		end
+	end
+
+	local players = {}
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and FX.allowed(plr) then
+			local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+
+			if hum and hum.Health > 0 and FX.rootOf(plr) then
+				table.insert(players, plr)
+			end
+		end
+	end
+
+	for _, frame in ipairs(frames) do
+		for n, plr in ipairs(players) do
+			local b = createButton(plr.DisplayName .. "  (@" .. plr.Name .. ")", frame)
+
+			b.Size = UDim2.new(1, 0, 0, 34)
+			b.TextSize = 12
+			b.TextTruncate = Enum.TextTruncate.AtEnd
+			b.LayoutOrder = n
+
+			SW.listBtns[b] = plr
+
+			b.Activated:Connect(function()
+				if SW.pickPlayer then
+					SW.pickPlayer(plr)
+				end
+			end)
+		end
+
+		if #players == 0 then
+			local l = Instance.new("TextLabel")
+			l.Size = UDim2.new(1, 0, 0, 24)
+			l.BackgroundTransparency = 1
+			l.Text = FX.L("or_none")
+			l.TextColor3 = THEME.Muted
+			l.TextSize = 11
+			l.Font = Enum.Font.GothamBold
+			l.LayoutOrder = 1
+			l.Parent = frame
+		end
+	end
+
+	SW.paintList()
+end
+
+Players.PlayerAdded:Connect(function()
+	task.delay(1, function()
+		if FX.tab >= 3 then
+			SW.buildList()
+		end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function()
+	task.delay(0.2, function()
+		if FX.tab >= 3 then
+			SW.buildList()
+		end
+	end)
+end)
+
+FX.applyTab()
+
+--========================================================
+-- MENU OPEN / CLOSE
+--========================================================
+
+local menuVisible = true
+local menuToken = 0
+
+local menuAnim = Instance.new("NumberValue")
+menuAnim.Name = "MenuAnim"
+menuAnim.Value = 0
+menuAnim.Parent = gui -- parented so tweens always run
+
+local function applyMenuAnim()
+	local a = menuAnim.Value
+	menuScale.Scale = baseScale * scaleOf("menu") * (0.8 + 0.2 * a)
+	menu.GroupTransparency = math.clamp(1 - a, 0, 1)
+end
+
+menuAnim.Changed:Connect(applyMenuAnim)
+
+function setMenuOpen(open, silent)
+	menuVisible = open
+	menuToken += 1
+
+	local token = menuToken
+
+	if not silent then
+		playUI(open and "Open" or "Close")
+	end
+
+	tween(toggleIcon, 0.25, {
+		ImageColor3 = open and Color3.new(1, 1, 1) or Color3.fromRGB(200, 205, 220),
+	})
+
+	if open then
+		menu.Visible = true
+		tween(menuAnim, 0.4, { Value = 1 }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	else
+		local t = tween(menuAnim, 0.22, { Value = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+		t.Completed:Connect(function()
+			if token == menuToken and not menuVisible then
+				menu.Visible = false
+			end
+		end)
+	end
+end
+
+local function updateLayoutForViewport()
+	local vp = getViewport()
+
+	baseScale = math.clamp((vp.Y - 90) / MENU_H, 0.5, MAX_MENU_BASE_SCALE)
+	applyMenuAnim()
+end
+
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateLayoutForViewport)
+
+register("menu", "MENU", menu, function()
+	applyMenuAnim()
+end)
+
+toggle.InputBegan:Connect(function(input)
+	if isPress(input) then
+		beginDrag("toggle", input)
+	end
+end)
+
+toggle.MouseEnter:Connect(function()
+	playUI("Hover")
+	tween(toggleScale, 0.15, { Scale = 1.1 })
+end)
+
+toggle.MouseLeave:Connect(function()
+	tween(toggleScale, 0.2, { Scale = 1 })
+end)
+
+toggle.MouseButton1Down:Connect(function()
+	tween(toggleScale, 0.08, { Scale = 0.9 })
+end)
+
+toggle.MouseButton1Up:Connect(function()
+	tween(toggleScale, 0.25, { Scale = UIS.MouseEnabled and 1.1 or 1 }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+end)
+
+toggle.Activated:Connect(function()
+	if dragMoved.toggle or editMode then
+		return
+	end
+
+	setMenuOpen(not menuVisible)
+end)
+
+RunService.Heartbeat:Connect(function()
+	local r = (os.clock() * 40) % 360
+
+	menuGradient.Rotation = r
+	toggleGradient.Rotation = r
+end)
+
+--========================================================
+-- ✈ FIGHTER-JET HUD
+--========================================================
+
+local PX_PER_DEG = 7
+local TAPE_ROW = 22
+local HDG_PX = 24
+local HDG_NAMES = { [0] = "N", [90] = "E", [180] = "S", [270] = "W" }
+
+local hud = Instance.new("Frame")
+hud.Name = "HUD"
+hud.Size = UDim2.fromScale(1, 1)
+hud.BackgroundTransparency = 1
+hud.Visible = false
+hud.Parent = gui
+
+local function hudText(parent, text, size, pos, align)
+	local t = Instance.new("TextLabel")
+	t.BackgroundTransparency = 1
+	t.Size = size
+	t.Position = pos or UDim2.new()
+	t.Text = text or ""
+	t.TextColor3 = HUD_GREEN
+	t.TextSize = 13
+	t.Font = Enum.Font.Code
+	t.TextXAlignment = align or Enum.TextXAlignment.Left
+	t.TextStrokeTransparency = 0.5
+	t.Parent = parent
+	return t
+end
+
+local function makeHudButton(parent, text, size, pos, anchor, color, onClick)
+	local b = Instance.new("TextButton")
+	b.Size = size
+	b.AnchorPoint = anchor
+	b.Position = pos
+	b.BackgroundColor3 = HUD_DARK
+	b.BackgroundTransparency = 0.25
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = false
+	if type(text) == "table" then
+		FX.tr(b, text.key)
+	else
+		b.Text = text
+	end
+	b.TextColor3 = color
+	b.TextSize = 13
+	b.Font = Enum.Font.GothamBold
+	b.Parent = parent
+
+	addCorner(b, 6)
+
+	local s = addStroke(b, color, 1.5, 0.2)
+
+	b.MouseEnter:Connect(function()
+		playUI("Hover")
+	end)
+
+	b.Activated:Connect(function()
+		playUI("Click")
+		onClick()
+	end)
+
+	return b, s
+end
+
+-- PITCH LADDER
+local ladder = Instance.new("Frame")
+ladder.Name = "PitchLadder"
+ladder.Size = UDim2.fromOffset(1, 1)
+ladder.AnchorPoint = Vector2.new(0.5, 0.5)
+ladder.Position = UDim2.fromScale(0.5, 0.5)
+ladder.BackgroundTransparency = 1
+ladder.Parent = hud
+
+for a = -30, 30, 10 do
+	local width = a == 0 and 240 or (a % 20 == 0 and 110 or 60)
+
+	local rung = Instance.new("Frame")
+	rung.Size = UDim2.fromOffset(width, 2)
+	rung.AnchorPoint = Vector2.new(0.5, 0.5)
+	rung.Position = UDim2.fromOffset(0, -a * PX_PER_DEG)
+	rung.BackgroundColor3 = HUD_GREEN
+	rung.BackgroundTransparency = a == 0 and 0.1 or 0.4
+	rung.BorderSizePixel = 0
+	rung.Parent = ladder
+
+	if a ~= 0 then
+		local txt = (a > 0 and "+" or "") .. tostring(a)
+		local lbl = hudText(rung, txt, UDim2.fromOffset(40, 14), UDim2.new(0, -46, 0.5, -7), Enum.TextXAlignment.Right)
+		lbl.TextSize = 11
+		local lbl2 = hudText(rung, txt, UDim2.fromOffset(40, 14), UDim2.new(1, 6, 0.5, -7))
+		lbl2.TextSize = 11
+	end
+end
+
+local RET_SIZE = 84
+
+local function makeBrackets(parent, len, thick, color)
+	local list = {}
+
+	local function bar(sz, pos)
+		local f = Instance.new("Frame")
+		f.Size = sz
+		f.Position = pos
+		f.BackgroundColor3 = color
+		f.BorderSizePixel = 0
+		f.Parent = parent
+		table.insert(list, f)
+	end
+
+	bar(UDim2.fromOffset(len, thick), UDim2.fromOffset(0, 0))
+	bar(UDim2.fromOffset(thick, len), UDim2.fromOffset(0, 0))
+	bar(UDim2.fromOffset(len, thick), UDim2.new(1, -len, 0, 0))
+	bar(UDim2.fromOffset(thick, len), UDim2.new(1, -thick, 0, 0))
+	bar(UDim2.fromOffset(len, thick), UDim2.new(0, 0, 1, -thick))
+	bar(UDim2.fromOffset(thick, len), UDim2.new(0, 0, 1, -len))
+	bar(UDim2.fromOffset(len, thick), UDim2.new(1, -len, 1, -thick))
+	bar(UDim2.fromOffset(thick, len), UDim2.new(1, -thick, 1, -len))
+
+	return list
+end
+
+--========================================================
+-- LOCK RETICLE
+-- Own ScreenGui with IgnoreGuiInset = true, so its coordinates
+-- are exactly the same as Camera:WorldToViewportPoint output.
+--========================================================
+
+local lockGui = Instance.new("ScreenGui")
+lockGui.Name = "DroneLockReticle"
+lockGui.ResetOnSpawn = false
+lockGui.IgnoreGuiInset = true
+lockGui.DisplayOrder = 5
+lockGui.Enabled = false
+lockGui.Parent = PlayerGui
+
+local reticle = Instance.new("Frame")
+reticle.Name = "Reticle"
+reticle.Size = UDim2.fromOffset(RET_SIZE, RET_SIZE)
+reticle.AnchorPoint = Vector2.new(0.5, 0.5)
+reticle.Position = UDim2.fromScale(0.5, 0.5)
+reticle.BackgroundTransparency = 1
+reticle.Parent = lockGui
+
+local reticleBars = makeBrackets(reticle, 16, 2, HUD_GREEN)
+local reticleColor = HUD_GREEN
+
+local lockLabel = hudText(reticle, "", UDim2.fromOffset(200, 16), UDim2.new(0.5, -100, 1, 6), Enum.TextXAlignment.Center)
+lockLabel.TextColor3 = THEME.Danger
+
+local function setReticleColor(c)
+	if c == reticleColor then
+		return
+	end
+
+	reticleColor = c
+
+	for _, bar in ipairs(reticleBars) do
+		bar.BackgroundColor3 = c
+	end
+
+	lockLabel.TextColor3 = c
+end
+
+-- v15: SPEED LINES (own ScreenGui below the HUD, shown only at high speed)
+do
+	local fxGui = Instance.new("ScreenGui")
+	fxGui.Name = "DroneSpeedFx"
+	fxGui.ResetOnSpawn = false
+	fxGui.IgnoreGuiInset = true
+	fxGui.DisplayOrder = -1
+	fxGui.Enabled = false
+	fxGui.Parent = PlayerGui
+
+	FX.fxGui = fxGui
+
+	local layer = Instance.new("Frame")
+	layer.Size = UDim2.fromScale(1, 1)
+	layer.BackgroundTransparency = 1
+	layer.BorderSizePixel = 0
+	layer.ClipsDescendants = true
+	layer.Parent = fxGui
+
+	FX.lines = {}
+
+	local COUNT = 18
+
+	for i = 1, COUNT do
+		local holder = Instance.new("Frame")
+		holder.Size = UDim2.fromScale(1, 1)
+		holder.AnchorPoint = Vector2.new(0.5, 0.5)
+		holder.Position = UDim2.fromScale(0.5, 0.5)
+		holder.BackgroundTransparency = 1
+		holder.BorderSizePixel = 0
+		holder.Rotation = (i - 1) * (360 / COUNT) + math.random() * 8
+		holder.Parent = layer
+
+		local line = Instance.new("Frame")
+		line.Size = UDim2.fromOffset(80, 2)
+		line.AnchorPoint = Vector2.new(0, 0.5)
+		line.Position = UDim2.new(0.5, 300, 0.5, 0)
+		line.BackgroundColor3 = Color3.fromRGB(225, 240, 255)
+		line.BackgroundTransparency = 1
+		line.BorderSizePixel = 0
+		line.Parent = holder
+
+		local fade = Instance.new("UIGradient")
+		fade.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		fade.Parent = line
+
+		FX.lines[i] = {
+			line = line,
+			phase = math.random(),
+			len = 50 + math.random() * 110,
+			spd = 0.85 + math.random() * 0.8,
+		}
+	end
+end
+
+function FX.updateLines(dt)
+	local k = FX.speedK
+	local on = k > 0.04
+
+	if on ~= FX.linesOn then
+		FX.linesOn = on
+		FX.fxGui.Enabled = on
+	end
+
+	if not on then
+		return
+	end
+
+	FX.lt += dt * (0.7 + 1.8 * k)
+
+	local vp = Camera.ViewportSize
+	local r0 = math.min(vp.X, vp.Y) * 0.30
+	local r1 = math.sqrt(vp.X * vp.X + vp.Y * vp.Y) * 0.5 + 40
+
+	for _, L in ipairs(FX.lines) do
+		local p = (FX.lt * L.spd + L.phase) % 1
+		local d = r0 + (r1 - r0) * (p * p)
+		local len = L.len * (0.4 + 1.2 * p) * (0.5 + k)
+
+		L.line.Size = UDim2.fromOffset(len, 2)
+		L.line.Position = UDim2.new(0.5, d, 0.5, 0)
+		L.line.BackgroundTransparency = 1 - 0.55 * k * math.sin(p * math.pi)
+	end
+end
+
+-- flight-aim dot (stays in the HUD, always screen center)
+do
+	local aimDot = Instance.new("Frame")
+	aimDot.Size = UDim2.fromOffset(4, 4)
+	aimDot.AnchorPoint = Vector2.new(0.5, 0.5)
+	aimDot.Position = UDim2.fromScale(0.5, 0.5)
+	aimDot.BackgroundColor3 = HUD_GREEN
+	aimDot.BorderSizePixel = 0
+	aimDot.Parent = hud
+
+	addCorner(aimDot, 2)
+end
+
+-- HEADING TAPE
+local hdgGroup = Instance.new("Frame")
+hdgGroup.Name = "Heading"
+hdgGroup.Size = UDim2.fromOffset(300, 70)
+hdgGroup.AnchorPoint = Vector2.new(0.5, 0)
+hdgGroup.Position = UDim2.new(0.5, 0, 0, 14)
+hdgGroup.BackgroundTransparency = 1
+hdgGroup.Parent = hud
+
+local headingTicks = {}
+
+do
+	local headingBox = Instance.new("Frame")
+	headingBox.Size = UDim2.fromOffset(300, 28)
+	headingBox.Position = UDim2.fromOffset(0, 0)
+	headingBox.BackgroundTransparency = 1
+	headingBox.ClipsDescendants = true
+	headingBox.Parent = hdgGroup
+
+	for i = 1, 29 do
+		local t = hudText(headingBox, "", UDim2.fromOffset(40, 20), UDim2.new(0.5, 0, 0.5, 0), Enum.TextXAlignment.Center)
+		t.AnchorPoint = Vector2.new(0.5, 0.5)
+		headingTicks[i] = t
+	end
+end
+
+hudText(hdgGroup, "▼", UDim2.fromOffset(20, 12), UDim2.new(0.5, -10, 0, 26), Enum.TextXAlignment.Center)
+
+local headingReadout = hudText(hdgGroup, "", UDim2.fromOffset(120, 18), UDim2.new(0.5, -60, 0, 38), Enum.TextXAlignment.Center)
+headingReadout.TextSize = 14
+
+register("heading", "HEADING", hdgGroup)
+
+-- TELEMETRY
+local telemetry = hudText(hud, "", UDim2.fromOffset(260, 110), UDim2.fromOffset(16, 14))
+telemetry.TextYAlignment = Enum.TextYAlignment.Top
+telemetry.TextSize = 12
+
+register("telemetry", "TELEMETRY", telemetry)
+
+-- VERTICAL TAPES
+local function createVerticalTape(parent, position, prefix, step)
+	local box = Instance.new("Frame")
+	box.Size = UDim2.fromOffset(78, 240)
+	box.Position = position
+	box.BackgroundTransparency = 1
+	box.ClipsDescendants = true
+	box.Parent = parent
+
+	local ticks = {}
+
+	for i = 1, 13 do
+		local t = hudText(box, "", UDim2.new(1, 0, 0, TAPE_ROW), UDim2.new(0, 0, 0.5, 0), Enum.TextXAlignment.Center)
+		t.AnchorPoint = Vector2.new(0, 0.5)
+		t.TextSize = 12
+		ticks[i] = t
+	end
+
+	local readout = Instance.new("Frame")
+	readout.Size = UDim2.new(1, 0, 0, 26)
+	readout.AnchorPoint = Vector2.new(0, 0.5)
+	readout.Position = UDim2.new(0, 0, 0.5, 0)
+	readout.BackgroundColor3 = HUD_DARK
+	readout.BackgroundTransparency = 0.15
+	readout.BorderSizePixel = 0
+	readout.Parent = box
+
+	addStroke(readout, HUD_GREEN, 1.2, 0.2)
+
+	local readoutText = hudText(readout, "", UDim2.fromScale(1, 1), UDim2.new(), Enum.TextXAlignment.Center)
+	readoutText.TextSize = 14
+
+	local function update(value)
+		local base = math.floor(value / step) * step
+
+		for i, t in ipairs(ticks) do
+			local v = base + (i - 7) * step
+			t.Text = tostring(math.floor(v))
+			t.Position = UDim2.new(0, 0, 0.5, -(v - value) / step * TAPE_ROW)
+		end
+
+		readoutText.Text = string.format("%s %d", prefix, math.floor(value))
+	end
+
+	return update, box
+end
+
+local updateSpeedTape, speedBox = createVerticalTape(hud, UDim2.new(0, 16, 0.5, -120), "SPD", SPEED_STEP)
+local updateAltTape, altBox = createVerticalTape(hud, UDim2.new(1, -94, 0.5, -120), "ALT", 20)
+
+register("speedTape", "SPEED TAPE", speedBox)
+register("altTape", "ALTITUDE", altBox)
+
+local function updateHeadingTape(heading)
+	local base = math.floor(heading / 10) * 10
+
+	for i = 1, 29 do
+		local v = base + (i - 15) * 10
+		local deg = math.floor(v) % 360
+		local t = headingTicks[i]
+
+		if HDG_NAMES[deg] then
+			t.Text = HDG_NAMES[deg]
+		elseif deg % 30 == 0 then
+			t.Text = string.format("%03d", deg)
+		else
+			t.Text = "|"
+		end
+
+		t.Position = UDim2.new(0.5, (v - heading) / 10 * HDG_PX, 0.5, 0)
+	end
+end
+
+-- MESSAGE LINE
+local messageLabel = hudText(hud, "", UDim2.fromOffset(380, 20), UDim2.new(0.5, -190, 0, 72), Enum.TextXAlignment.Center)
+messageLabel.TextSize = 14
+
+function showMessage(text, color)
+	messageLabel.Text = text
+	messageLabel.TextColor3 = color or HUD_GREEN
+	messageUntil = os.clock() + 2.5
+end
+
+-- EJECT
+do
+	local ejectButton = makeHudButton(
+		hud,
+		{ key = "eject" },
+		UDim2.fromOffset(104, 34),
+		UDim2.new(1, -16, 0, 14),
+		Vector2.new(1, 0),
+		THEME.Danger,
+		function()
+			stopDrone()
+		end
+	)
+
+	register("eject", "EJECT", ejectButton)
+end
+
+-- BOTTOM BAR (speed − / readout / +, and LOCK)
+local bottomGroup = Instance.new("Frame")
+bottomGroup.Name = "BottomBar"
+bottomGroup.Size = UDim2.fromOffset(300, 100)
+bottomGroup.AnchorPoint = Vector2.new(0.5, 1)
+bottomGroup.Position = UDim2.new(0.5, 0, 1, -10)
+bottomGroup.BackgroundTransparency = 1
+bottomGroup.Parent = hud
+
+makeHudButton(
+	bottomGroup,
+	"−",
+	UDim2.fromOffset(44, 34),
+	UDim2.new(0.5, -96, 1, -56),
+	Vector2.new(0.5, 1),
+	HUD_GREEN,
+	function()
+		changeSpeed(-SPEED_STEP)
+	end
+)
+
+local speedReadoutText
+
+do
+	local speedReadout = Instance.new("Frame")
+	speedReadout.Size = UDim2.fromOffset(96, 34)
+	speedReadout.AnchorPoint = Vector2.new(0.5, 1)
+	speedReadout.Position = UDim2.new(0.5, 0, 1, -56)
+	speedReadout.BackgroundColor3 = HUD_DARK
+	speedReadout.BackgroundTransparency = 0.25
+	speedReadout.BorderSizePixel = 0
+	speedReadout.Parent = bottomGroup
+
+	addCorner(speedReadout, 6)
+	addStroke(speedReadout, HUD_GREEN, 1.2, 0.5)
+
+	speedReadoutText = hudText(speedReadout, "", UDim2.fromScale(1, 1), UDim2.new(), Enum.TextXAlignment.Center)
+	speedReadoutText.TextSize = 14
+	speedReadoutText.Font = Enum.Font.GothamBold
+end
+
+makeHudButton(
+	bottomGroup,
+	"+",
+	UDim2.fromOffset(44, 34),
+	UDim2.new(0.5, 96, 1, -56),
+	Vector2.new(0.5, 1),
+	HUD_GREEN,
+	function()
+		changeSpeed(SPEED_STEP)
+	end
+)
+
+local lockButton, lockStroke = makeHudButton(
+	bottomGroup,
+	FX.L("lock_off"),
+	UDim2.fromOffset(150, 40),
+	UDim2.new(0.5, 0, 1, -6),
+	Vector2.new(0.5, 1),
+	HUD_GREEN,
+	function()
+		setLock(not lockEnabled)
+	end
+)
+
+register("bottom", "SPEED / LOCK", bottomGroup)
+
+-- v15: NEXT TARGET button (its own element: move / resize it in EDIT HUD)
+do
+	local nextButton = makeHudButton(
+		hud,
+		{ key = "next" },
+		UDim2.fromOffset(96, 40),
+		UDim2.new(0.5, 90, 1, -16),
+		Vector2.new(0, 1),
+		THEME.Cyan,
+		function()
+			FX.cycleTarget()
+		end
+	)
+
+	register("next", "NEXT TARGET", nextButton)
+end
+
+-- v19: BOOST button (same spot as before, mirrors NEXT): temporary speed burst + cooldown
+do
+	local boostButton, boostStroke = makeHudButton(
+		hud,
+		FX.L("boost"),
+		UDim2.fromOffset(96, 40),
+		UDim2.new(0.5, -90, 1, -16),
+		Vector2.new(1, 1),
+		THEME.Warn,
+		function()
+			FX.doBoost()
+		end
+	)
+
+	FX.boostButton = boostButton
+	FX.boostStroke = boostStroke
+
+	register("boost", "BOOST", boostButton)
+end
+
+-- button shows: BOOST (ready) / BOOST ▲ (active) / BOOST 3s (cooldown)
+function FX.updateBoostUI(now)
+	local btn = FX.boostButton
+
+	if not btn then
+		return
+	end
+
+	local text, color, bg
+
+	if now < FX.boostUntil then
+		text = FX.L("boost") .. " ▲"
+		color = THEME.Danger
+		bg = 0.05
+	elseif now < FX.boostReadyAt then
+		text = FX.L("boost") .. " " .. math.ceil(FX.boostReadyAt - now) .. "s"
+		color = THEME.Muted
+		bg = 0.5
+	else
+		text = FX.L("boost")
+		color = THEME.Warn
+		bg = 0.25
+	end
+
+	if text ~= FX.boostText then
+		FX.boostText = text
+		btn.Text = text
+		btn.TextColor3 = color
+		FX.boostStroke.Color = color
+		btn.BackgroundTransparency = bg
+	end
+end
+
+function refreshLockUI()
+	lockButton.Text = lockEnabled and FX.L("lock_on") or FX.L("lock_off")
+	local c = lockEnabled and THEME.Danger or HUD_GREEN
+	lockButton.TextColor3 = c
+	lockStroke.Color = c
+end
+
+-- v21 SWARM STRIKE panel: drag the title bar to move it, [-] [+] resize it,
+-- [▲/▼] collapse / expand it. Also movable / resizable in EDIT HUD. All saved.
+do
+	local W = 260
+	local FULL_H = 184
+	local BAR_H = 28
+	local topLeft = Vector2.new(0, 0)
+
+	local panel = Instance.new("Frame")
+	panel.Name = "SwarmPanel"
+	panel.Size = UDim2.fromOffset(W, FULL_H)
+	panel.AnchorPoint = Vector2.new(1, 0)
+	panel.Position = UDim2.new(1, -14, 0.25, 0)
+	panel.BackgroundColor3 = HUD_DARK
+	panel.BackgroundTransparency = 0.3
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.Parent = gui
+
+	addCorner(panel, 10)
+	addStroke(panel, THEME.Danger, 1.5, 0.35)
+
+	-- title bar = drag handle
+	local bar = Instance.new("Frame")
+	bar.Name = "TitleBar"
+	bar.Size = UDim2.fromOffset(W, BAR_H)
+	bar.BackgroundColor3 = THEME.Danger
+	bar.BackgroundTransparency = 0.8
+	bar.BorderSizePixel = 0
+	bar.Active = true
+	bar.Parent = panel
+
+	addCorner(bar, 8)
+
+	bar.InputBegan:Connect(function(input)
+		if isPress(input) then
+			beginDrag("swarm", input)
+		end
+	end)
+
+	SW.titleLabel = hudText(bar, "", UDim2.fromOffset(166, BAR_H), UDim2.fromOffset(8, 0))
+	SW.titleLabel.Font = Enum.Font.GothamBold
+	SW.titleLabel.TextSize = 11
+
+	makeHudButton(bar, "−", UDim2.fromOffset(24, 22), UDim2.fromOffset(176, 3), topLeft, THEME.Cyan, function()
+		SW.resize(-0.1)
+	end)
+
+	makeHudButton(bar, "+", UDim2.fromOffset(24, 22), UDim2.fromOffset(203, 3), topLeft, THEME.Cyan, function()
+		SW.resize(0.1)
+	end)
+
+	SW.collapseBtn = makeHudButton(bar, "▲", UDim2.fromOffset(24, 22), UDim2.fromOffset(230, 3), topLeft, THEME.Warn, function()
+		Cfg.swarmCollapsed = not Cfg.swarmCollapsed
+		SW.applyCollapse()
+		scheduleSave()
+	end)
+
+	-- everything below the title bar (hidden while collapsed)
+	local inner = Instance.new("Frame")
+	inner.Name = "Inner"
+	inner.Position = UDim2.fromOffset(0, BAR_H)
+	inner.Size = UDim2.fromOffset(W, FULL_H - BAR_H)
+	inner.BackgroundTransparency = 1
+	inner.Parent = panel
+
+	SW.msgLabel = hudText(inner, "", UDim2.fromOffset(244, 14), UDim2.fromOffset(8, 2))
+	SW.msgLabel.TextSize = 12
+
+	SW.tgtLabel = hudText(inner, "", UDim2.fromOffset(244, 14), UDim2.fromOffset(8, 18))
+	SW.tgtLabel.TextSize = 12
+	SW.tgtLabel.TextColor3 = THEME.Muted
+
+	SW.lockBtn, SW.lockStroke = makeHudButton(
+		inner,
+		FX.L("lock_off"),
+		UDim2.fromOffset(120, 32),
+		UDim2.fromOffset(8, 38),
+		topLeft,
+		HUD_GREEN,
+		function()
+			if SW.onLock then
+				SW.onLock()
+			end
+		end
+	)
+
+	makeHudButton(
+		inner,
+		{ key = "next" },
+		UDim2.fromOffset(120, 32),
+		UDim2.fromOffset(132, 38),
+		topLeft,
+		THEME.Cyan,
+		function()
+			if SW.onNext then
+				SW.onNext()
+			end
+		end
+	)
+
+	makeHudButton(
+		inner,
+		{ key = "sw_add" },
+		UDim2.fromOffset(120, 32),
+		UDim2.fromOffset(8, 76),
+		topLeft,
+		THEME.Accent,
+		function()
+			if SW.onAdd then
+				SW.onAdd()
+			end
+		end
+	)
+
+	makeHudButton(
+		inner,
+		{ key = "sw_clear" },
+		UDim2.fromOffset(120, 32),
+		UDim2.fromOffset(132, 76),
+		topLeft,
+		THEME.Warn,
+		function()
+			if SW.onClear then
+				SW.onClear()
+			end
+		end
+	)
+
+	SW.launchBtn, SW.launchStroke = makeHudButton(
+		inner,
+		{ key = "sw_launch" },
+		UDim2.fromOffset(244, 38),
+		UDim2.fromOffset(8, 114),
+		topLeft,
+		THEME.Danger,
+		function()
+			if SW.onLaunch then
+				SW.onLaunch()
+			end
+		end
+	)
+
+	SW.panel = panel
+	SW.inner = inner
+
+	-- collapse / expand: only the title bar stays
+	function SW.applyCollapse()
+		local c = Cfg.swarmCollapsed == true
+
+		inner.Visible = not c
+		panel.Size = UDim2.fromOffset(W, c and BAR_H or FULL_H)
+		SW.collapseBtn.Text = c and "▼" or "▲"
+	end
+
+	-- resize with [-] [+] (same layout system as the UI editor, so it is saved)
+	function SW.resize(delta)
+		local L = ensureLayout("swarm")
+
+		L.s = math.clamp(
+			math.floor((scaleOf("swarm") + delta) / SCALE_STEP + 0.5) * SCALE_STEP,
+			MIN_LAYOUT_SCALE,
+			MAX_LAYOUT_SCALE
+		)
+
+		applyElement("swarm")
+		scheduleSave()
+	end
+
+	register("swarm", "SWARM PANEL", panel)
+	SW.applyCollapse()
+end
+
+-- DIRECTION PAD
+local controls = Instance.new("Frame")
+controls.Name = "DirectionPad"
+controls.Size = UDim2.fromOffset(202, 128)
+controls.AnchorPoint = Vector2.new(0, 1)
+controls.Position = UDim2.new(0, 30, 1, -24)
+controls.BackgroundTransparency = 1
+controls.Parent = hud
+
+register("pad", "DIRECTION PAD", controls)
+
+local function createMoveButton(text, pos)
+	local b = Instance.new("TextButton")
+
+	b.Size = UDim2.fromOffset(58, 58)
+	b.AnchorPoint = Vector2.new(0.5, 0.5)
+	b.Position = pos
+	b.BackgroundColor3 = HUD_DARK
+	b.BackgroundTransparency = 0.2
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = HUD_GREEN
+	b.TextSize = 25
+	b.Font = Enum.Font.GothamBold
+	b.AutoButtonColor = false
+	b.Parent = controls
+
+	addCorner(b, 14)
+
+	local s = addStroke(b, HUD_GREEN, 1.5, 0.5)
+
+	local sc = Instance.new("UIScale")
+	sc.Parent = b
+
+	local function pressed()
+		tween(sc, 0.08, { Scale = 0.9 })
+		tween(b, 0.08, { BackgroundColor3 = Color3.fromRGB(30, 90, 50) })
+		tween(s, 0.08, { Transparency = 0.1 })
+	end
+
+	local function released()
+		tween(sc, 0.2, { Scale = 1 }, Enum.EasingStyle.Back)
+		tween(b, 0.2, { BackgroundColor3 = HUD_DARK })
+		tween(s, 0.2, { Transparency = 0.5 })
+	end
+
+	b.InputBegan:Connect(function(input)
+		if isPress(input) then
+			pressed()
+		end
+	end)
+
+	b.InputEnded:Connect(function(input)
+		if isPress(input) then
+			released()
+		end
+	end)
+
+	return b
+end
+
+local upButton = createMoveButton("▲", UDim2.fromOffset(72 + 29, 0 + 29))
+local downButton = createMoveButton("▼", UDim2.fromOffset(72 + 29, 70 + 29))
+local leftButton = createMoveButton("◀", UDim2.fromOffset(0 + 29, 70 + 29))
+local rightButton = createMoveButton("▶", UDim2.fromOffset(144 + 29, 70 + 29))
+
+--========================================================
+-- RADAR (heading-up)
+--========================================================
+
+local radar = Instance.new("Frame")
+radar.Name = "Radar"
+radar.Size = UDim2.fromOffset(RADAR_SIZE, RADAR_SIZE)
+radar.AnchorPoint = Vector2.new(1, 1)
+radar.Position = UDim2.new(1, -16, 1, -16)
+radar.BackgroundColor3 = HUD_DARK
+radar.BackgroundTransparency = 0.25
+radar.BorderSizePixel = 0
+radar.ClipsDescendants = true
+radar.Parent = hud
+
+addCorner(radar, RADAR_SIZE / 2)
+addStroke(radar, HUD_GREEN, 1.5, 0.3)
+
+-- rings, cross lines, labels and own-ship marker (decoration only)
+do
+	local function makeRing(frac)
+		local ring = Instance.new("Frame")
+		ring.Size = UDim2.fromScale(frac, frac)
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		ring.Position = UDim2.fromScale(0.5, 0.5)
+		ring.BackgroundTransparency = 1
+		ring.BorderSizePixel = 0
+		ring.Parent = radar
+
+		addCorner(ring, RADAR_SIZE)
+		addStroke(ring, HUD_GREEN, 1, 0.6)
+	end
+
+	makeRing(0.5)
+	makeRing(0.98)
+
+	local crossH = Instance.new("Frame")
+	crossH.Size = UDim2.new(1, 0, 0, 1)
+	crossH.AnchorPoint = Vector2.new(0.5, 0.5)
+	crossH.Position = UDim2.fromScale(0.5, 0.5)
+	crossH.BackgroundColor3 = HUD_GREEN
+	crossH.BackgroundTransparency = 0.7
+	crossH.BorderSizePixel = 0
+	crossH.Parent = radar
+
+	local crossV = Instance.new("Frame")
+	crossV.Size = UDim2.new(0, 1, 1, 0)
+	crossV.AnchorPoint = Vector2.new(0.5, 0.5)
+	crossV.Position = UDim2.fromScale(0.5, 0.5)
+	crossV.BackgroundColor3 = HUD_GREEN
+	crossV.BackgroundTransparency = 0.7
+	crossV.BorderSizePixel = 0
+	crossV.Parent = radar
+
+	local ownShip = Instance.new("Frame")
+	ownShip.Size = UDim2.fromOffset(6, 6)
+	ownShip.AnchorPoint = Vector2.new(0.5, 0.5)
+	ownShip.Position = UDim2.fromScale(0.5, 0.5)
+	ownShip.BackgroundColor3 = Color3.new(1, 1, 1)
+	ownShip.BorderSizePixel = 0
+	ownShip.ZIndex = 5
+	ownShip.Parent = radar
+
+	addCorner(ownShip, 3)
+
+	local radarLabel = hudText(radar, "RADAR", UDim2.new(1, 0, 0, 14), UDim2.fromOffset(0, 4), Enum.TextXAlignment.Center)
+	radarLabel.TextSize = 10
+	radarLabel.ZIndex = 6
+
+	local radarRangeLabel = hudText(radar, string.format(FX.L("rng") .. " %d ST", Cfg.radarRange), UDim2.new(1, 0, 0, 14), UDim2.new(0, 0, 1, -18), Enum.TextXAlignment.Center)
+	radarRangeLabel.TextSize = 10
+	radarRangeLabel.ZIndex = 6
+
+	FX.rangeLabel = radarRangeLabel
+end
+
+-- v15: tap the radar to zoom (400 / 800 / 1500)
+function FX.cycleRadar()
+	local list = FX.RADAR_RANGES
+	local idx = table.find(list, Cfg.radarRange) or 1
+
+	Cfg.radarRange = list[idx % #list + 1]
+	FX.rangeLabel.Text = string.format(FX.L("rng") .. " %d ST", Cfg.radarRange)
+
+	showMessage(FX.L("m_radar") .. " " .. Cfg.radarRange, HUD_GREEN)
+	playUI("Click")
+	scheduleSave()
+end
+
+do
+	local radarTap = Instance.new("TextButton")
+	radarTap.Name = "RangeTap"
+	radarTap.Size = UDim2.fromScale(1, 1)
+	radarTap.BackgroundTransparency = 1
+	radarTap.Text = ""
+	radarTap.AutoButtonColor = false
+	radarTap.ZIndex = 8
+	radarTap.Parent = radar
+
+	radarTap.Activated:Connect(function()
+		FX.cycleRadar()
+	end)
+end
+
+-- SWEEP: each holder is the full radar size and centered on it,
+-- so rotating a holder spins the line around the exact radar center.
+-- The line starts at the center and runs to the edge (right = 90° bearing).
+local sweepHolders = {}
+
+for k = 0, TRAIL_COUNT do
+	local holder = Instance.new("Frame")
+	holder.Name = "Sweep" .. k
+	holder.Size = UDim2.fromScale(1, 1)
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = UDim2.fromScale(0.5, 0.5)
+	holder.BackgroundTransparency = 1
+	holder.BorderSizePixel = 0
+	holder.Parent = radar
+
+	local line = Instance.new("Frame")
+	line.Size = UDim2.new(0.5, 0, 0, 2)
+	line.AnchorPoint = Vector2.new(0, 0.5)
+	line.Position = UDim2.new(0.5, 0, 0.5, 0)
+	line.BackgroundColor3 = HUD_GREEN
+	line.BackgroundTransparency = k == 0 and 0.15 or math.min(0.4 + k * 0.12, 0.95)
+	line.BorderSizePixel = 0
+	line.Parent = holder
+
+	sweepHolders[k] = holder
+end
+
+-- blip pool
+local radarDots = {}
+
+for i = 1, 30 do
+	local dot = Instance.new("Frame")
+	dot.Size = UDim2.fromOffset(7, 7)
+	dot.AnchorPoint = Vector2.new(0.5, 0.5)
+	dot.BackgroundColor3 = THEME.Cyan
+	dot.BorderSizePixel = 0
+	dot.Visible = false
+	dot.ZIndex = 4
+	dot.Parent = radar
+
+	addCorner(dot, 4)
+	radarDots[i] = dot
+end
+
+-- per blip: bearing (degrees clockwise from forward) and locked flag, filled on scan
+local radarBlips = {}
+local radarBlipCount = 0
+
+register("radar", "RADAR", radar)
+
+--========================================================
+-- TARGET INFO CARD
+-- Shown above the lock box, ONLY for the locked target:
+-- avatar headshot, display name and @username.
+-- Move / resize it in EDIT HUD: its offset from the default
+-- spot is applied to the live card, and it is auto-saved.
+--========================================================
+
+do
+	local INFO_W = 200
+	local INFO_H = 58
+	local HOME_X = 0.5 -- default editor spot (fraction of screen)
+	local HOME_Y = 0.3
+	local GAP = 42 -- px from the aim point up to the bottom of the card
+
+	local card = Instance.new("Frame")
+	card.Name = "TargetInfo"
+	card.Size = UDim2.fromOffset(INFO_W, INFO_H)
+	card.AnchorPoint = Vector2.new(0.5, 1)
+	card.Position = UDim2.fromScale(HOME_X, HOME_Y)
+	card.BackgroundColor3 = HUD_DARK
+	card.BackgroundTransparency = 0.2
+	card.BorderSizePixel = 0
+	card.Visible = false
+	card.Parent = hud
+
+	addCorner(card, 8)
+	addStroke(card, THEME.Danger, 1.5, 0.2)
+
+	local avatar = Instance.new("ImageLabel")
+	avatar.Size = UDim2.fromOffset(44, 44)
+	avatar.Position = UDim2.fromOffset(7, 7)
+	avatar.BackgroundColor3 = THEME.Track
+	avatar.BorderSizePixel = 0
+	avatar.Image = ""
+	avatar.ScaleType = Enum.ScaleType.Crop
+	avatar.Parent = card
+
+	addCorner(avatar, 8)
+
+	local fallback = hudText(avatar, "?", UDim2.fromScale(1, 1), UDim2.new(), Enum.TextXAlignment.Center)
+	fallback.TextSize = 20
+	fallback.Font = Enum.Font.GothamBold
+	fallback.TextColor3 = THEME.Muted
+	fallback.Visible = false
+
+	local infoName = hudText(card, "", UDim2.fromOffset(136, 20), UDim2.fromOffset(58, 8))
+	infoName.Font = Enum.Font.GothamBold
+	infoName.TextSize = 14
+	infoName.TextColor3 = THEME.Text
+	infoName.TextTruncate = Enum.TextTruncate.AtEnd
+
+	local infoUser = hudText(card, "", UDim2.fromOffset(136, 18), UDim2.fromOffset(58, 30))
+	infoUser.Font = Enum.Font.GothamMedium
+	infoUser.TextSize = 12
+	infoUser.TextColor3 = THEME.Cyan
+	infoUser.TextTruncate = Enum.TextTruncate.AtEnd
+
+	local arrow = hudText(card, "▼", UDim2.fromOffset(16, 12), UDim2.new(0.5, -8, 1, -1), Enum.TextXAlignment.Center)
+	arrow.TextSize = 11
+	arrow.TextColor3 = THEME.Danger
+
+	register("targetInfo", "TARGET INFO", card)
+
+	local shownRoot = nil
+
+	local function showPlayer(plr)
+		infoName.Text = plr.DisplayName
+		infoUser.Text = "@" .. plr.Name
+		avatar.Image = string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150", plr.UserId)
+		fallback.Visible = false
+	end
+
+	local function populate(root)
+		shownRoot = root
+
+		local model = root.Parent
+		local plr = model and Players:GetPlayerFromCharacter(model)
+
+		if plr then
+			showPlayer(plr)
+		else
+			local hum = model and model:FindFirstChildOfClass("Humanoid")
+			local shown = hum and hum.DisplayName ~= "" and hum.DisplayName or (model and model.Name) or "UNKNOWN"
+
+			infoName.Text = shown
+			infoUser.Text = "NPC"
+			avatar.Image = ""
+			fallback.Visible = true
+		end
+	end
+
+	-- editor preview (sample data, shows where the card will sit)
+	function InfoCard.preview()
+		shownRoot = nil
+		showPlayer(LP)
+		card.Visible = true
+		applyElement("targetInfo")
+	end
+
+	function InfoCard.hide()
+		shownRoot = nil
+
+		if not editMode then
+			card.Visible = false
+		end
+	end
+
+	-- called every frame while a target is locked
+	function InfoCard.update(root, aimPos)
+		if not root or not root.Parent then
+			InfoCard.hide()
+			return
+		end
+
+		local sp = Camera:WorldToScreenPoint(aimPos)
+
+		if sp.Z <= 0 then
+			card.Visible = false
+			return
+		end
+
+		if root ~= shownRoot then
+			populate(root)
+		end
+
+		local vp = getViewport()
+		local L = layout.targetInfo
+		local sc = scaleOf("targetInfo")
+
+		local dx = ((L and L.x or HOME_X) - HOME_X) * vp.X
+		local dy = ((L and L.y or HOME_Y) - HOME_Y) * vp.Y
+
+		local halfW = INFO_W * sc / 2
+		local minY = INFO_H * sc
+
+		local x = math.clamp(sp.X + dx, halfW, math.max(vp.X - halfW, halfW))
+		local y = math.clamp(sp.Y - GAP + dy, minY, math.max(vp.Y, minY))
+
+		card.Position = UDim2.fromOffset(x, y)
+		card.Visible = true
+	end
+end
+
+-- PREVIEW (used while the editor is open and the drone is off)
+local function previewHud()
+	telemetry.Text = "GS   0000 st/s\nMAX  0000 st\nAIR  000.0 s\nTHR  000%\nPIT  +00°\nTGT  --- st"
+	headingReadout.Text = "HDG 000°"
+	speedReadoutText.Text = tostring(SPEED)
+	updateHeadingTape(0)
+	updateSpeedTape(SPEED)
+	updateAltTape(0)
+	InfoCard.preview()
+end
+
+--========================================================
+-- UI EDITOR
+--========================================================
+
+editLayer = Instance.new("Frame")
+editLayer.Name = "Editor"
+editLayer.Size = UDim2.fromScale(1, 1)
+editLayer.BackgroundTransparency = 1
+editLayer.Active = false
+editLayer.ZIndex = 300
+editLayer.Parent = gui
+
+local editPanel = Instance.new("Frame")
+editPanel.Name = "EditPanel"
+editPanel.Size = UDim2.fromOffset(340, 142)
+editPanel.AnchorPoint = Vector2.new(0.5, 1)
+editPanel.Position = UDim2.new(0.5, 0, 1, -12)
+editPanel.BackgroundColor3 = THEME.Background
+editPanel.BorderSizePixel = 0
+editPanel.Visible = false
+editPanel.ZIndex = 2
+editPanel.Active = true
+editPanel.Parent = editLayer
+
+addCorner(editPanel, 16)
+addStroke(editPanel, THEME.Cyan, 1.5, 0.4)
+
+do
+	local editTitle = Instance.new("TextLabel")
+	editTitle.Size = UDim2.fromOffset(316, 16)
+	editTitle.Position = UDim2.fromOffset(12, 8)
+	editTitle.BackgroundTransparency = 1
+	FX.tr(editTitle, "ed_title")
+	editTitle.TextColor3 = THEME.Accent
+	editTitle.TextSize = 13
+	editTitle.Font = Enum.Font.GothamBlack
+	editTitle.TextXAlignment = Enum.TextXAlignment.Left
+	editTitle.Parent = editPanel
+
+	local editHint = Instance.new("TextLabel")
+	editHint.Size = UDim2.fromOffset(316, 14)
+	editHint.Position = UDim2.fromOffset(12, 24)
+	editHint.BackgroundTransparency = 1
+	FX.tr(editHint, "ed_hint")
+	editHint.TextColor3 = THEME.Muted
+	editHint.TextSize = 10
+	editHint.Font = Enum.Font.GothamMedium
+	editHint.TextXAlignment = Enum.TextXAlignment.Left
+	editHint.Parent = editPanel
+end
+
+local nameLabel = hudText(editPanel, "", UDim2.fromOffset(316, 16), UDim2.fromOffset(12, 42))
+nameLabel.TextSize = 13
+nameLabel.TextColor3 = THEME.Cyan
+nameLabel.Font = Enum.Font.GothamBold
+
+local sizeLabel = hudText(editPanel, "", UDim2.fromOffset(150, 34), UDim2.fromOffset(60, 62), Enum.TextXAlignment.Center)
+sizeLabel.TextSize = 14
+sizeLabel.Font = Enum.Font.GothamBold
+
+function updateEditorPanel()
+	if not selectedId or not ELEMENTS[selectedId] then
+		nameLabel.Text = FX.L("ed_select")
+		sizeLabel.Text = "--"
+		return
+	end
+
+	nameLabel.Text = FX.elName(selectedId, ELEMENTS[selectedId].name)
+	sizeLabel.Text = string.format(FX.L("ed_size") .. " %d%%", math.floor(scaleOf(selectedId) * 100 + 0.5))
+end
+
+local function resizeSelected(delta)
+	if not selectedId then
+		return
+	end
+
+	local L = ensureLayout(selectedId)
+	local newScale = scaleOf(selectedId) + delta
+
+	L.s = math.clamp(math.floor(newScale / SCALE_STEP + 0.5) * SCALE_STEP, MIN_LAYOUT_SCALE, MAX_LAYOUT_SCALE)
+
+	applyElement(selectedId)
+	updateEditorPanel()
+	scheduleSave()
+end
+
+local function resetSelected()
+	if not selectedId then
+		return
+	end
+
+	layout[selectedId] = nil
+	applyElement(selectedId)
+	updateEditorPanel()
+	scheduleSave()
+end
+
+local function resetAll()
+	for id in pairs(layout) do
+		layout[id] = nil
+	end
+
+	applyAll()
+	scheduleSave()
+end
+
+makeHudButton(editPanel, "−", UDim2.fromOffset(44, 34), UDim2.fromOffset(12, 62), Vector2.new(0, 0), THEME.Cyan, function()
+	resizeSelected(-SCALE_STEP)
+end)
+
+makeHudButton(editPanel, "+", UDim2.fromOffset(44, 34), UDim2.fromOffset(214, 62), Vector2.new(0, 0), THEME.Cyan, function()
+	resizeSelected(SCALE_STEP)
+end)
+
+makeHudButton(editPanel, { key = "ed_reset" }, UDim2.fromOffset(62, 34), UDim2.fromOffset(266, 62), Vector2.new(0, 0), THEME.Warn, function()
+	resetSelected()
+end)
+
+makeHudButton(editPanel, { key = "ed_resetall" }, UDim2.fromOffset(154, 28), UDim2.fromOffset(12, 104), Vector2.new(0, 0), THEME.Danger, function()
+	resetAll()
+end)
+
+makeHudButton(editPanel, { key = "ed_done" }, UDim2.fromOffset(154, 28), UDim2.fromOffset(174, 104), Vector2.new(0, 0), THEME.Accent, function()
+	setEditMode(false)
+end)
+
+-- handles: one clickable box per element, placed on top of the real element
+for id, e in pairs(ELEMENTS) do
+	local h = Instance.new("TextButton")
+	h.Name = "Handle_" .. id
+	h.Size = UDim2.fromOffset(40, 40)
+	h.BackgroundColor3 = THEME.Cyan
+	h.BackgroundTransparency = 0.88
+	h.BorderSizePixel = 0
+	h.AutoButtonColor = false
+	h.Text = ""
+	h.Visible = false
+	h.Parent = editLayer
+
+	addStroke(h, THEME.Cyan, 1, 0)
+
+	local tag = Instance.new("TextLabel")
+	tag.Size = UDim2.new(1, 0, 0, 14)
+	tag.Position = UDim2.fromOffset(0, -14)
+	tag.BackgroundColor3 = THEME.Cyan
+	tag.BackgroundTransparency = 0.1
+	tag.BorderSizePixel = 0
+	FX.tr(tag, nil, function()
+		return " " .. FX.elName(id, e.name)
+	end)
+	tag.TextColor3 = Color3.new(0, 0, 0)
+	tag.TextSize = 9
+	tag.Font = Enum.Font.GothamBold
+	tag.TextXAlignment = Enum.TextXAlignment.Left
+	tag.Parent = h
+
+	h.InputBegan:Connect(function(input)
+		if editMode and isPress(input) then
+			selectElement(id)
+			beginDrag(id, input)
+		end
+	end)
+
+	handles[id] = h
+end
+
+function selectElement(id)
+	selectedId = id
+
+	for hid, h in pairs(handles) do
+		local on = hid == id
+		local st = h:FindFirstChildOfClass("UIStroke")
+
+		st.Color = on and THEME.Accent or THEME.Cyan
+		st.Thickness = on and 2 or 1
+		h.BackgroundTransparency = on and 0.7 or 0.88
+	end
+
+	updateEditorPanel()
+end
+
+-- keep handles glued to their elements while editing
+RunService.RenderStepped:Connect(function()
+	if not editMode then
+		return
+	end
+
+	local origin = editLayer.AbsolutePosition
+
+	for id, e in pairs(ELEMENTS) do
+		local h = handles[id]
+		local ap = e.frame.AbsolutePosition
+		local as = e.frame.AbsoluteSize
+
+		h.Position = UDim2.fromOffset(ap.X - origin.X, ap.Y - origin.Y)
+		h.Size = UDim2.fromOffset(math.max(as.X, 12), math.max(as.Y, 12))
+	end
+end)
+
+function setEditMode(on)
+	if on and droneActive then
+		return
+	end
+
+	editMode = on
+	editPanel.Visible = on
+
+	for _, h in pairs(handles) do
+		h.Visible = on
+	end
+
+	if on then
+		setMenuOpen(true, true)
+		hud.Visible = true
+		previewHud()
+		selectElement(selectedId or "telemetry")
+	else
+		selectedId = nil
+		hud.Visible = false
+		InfoCard.hide()
+		scheduleSave()
+	end
+end
+
+--========================================================
+-- SPEED
+--========================================================
+
+local function updateSpeedUI()
+	speedLabel.Text = FX.L("speed") .. " " .. SPEED
+	speedReadoutText.Text = tostring(SPEED)
+
+	tween(menuSpeedFill, 0.25, {
+		Size = UDim2.new(math.clamp(SPEED / MAX_SPEED, 0, 1), 0, 1, 0),
+	})
+end
+
+function changeSpeed(delta)
+	SPEED = math.clamp(SPEED + delta, MIN_SPEED, MAX_SPEED)
+	updateSpeedUI()
+	scheduleSave() -- v15: the last speed is remembered
+end
+
+speedDown.Activated:Connect(function()
+	changeSpeed(-SPEED_STEP)
+end)
+
+speedUp.Activated:Connect(function()
+	changeSpeed(SPEED_STEP)
+end)
+
+--========================================================
+-- BUTTON STATE HELPERS
+--========================================================
+
+local function refreshDroneButton()
+	if droneActive then
+		droneButton.Text = FX.L("btn_drone_on")
+		applyButtonStyle(droneButton, THEME.OnBase, THEME.Accent, 0.3)
+	else
+		droneButton.Text = FX.L("btn_drone_off")
+		applyButtonStyle(droneButton, THEME.Panel, THEME.Cyan, 0.75)
+	end
+end
+
+local function resetBombButton()
+	bombButton.Text = FX.L("btn_bomb")
+	applyButtonStyle(bombButton, THEME.Panel, THEME.Cyan, 0.75)
+end
+
+-- v17: refreshes every text that is set from code (not bound) after a language change
+function FX.onLang()
+	if FX.paintLang then
+		FX.paintLang()
+	end
+
+	for _, refresh in pairs(FX.togglers) do
+		refresh()
+	end
+
+	FX.boostText = ""
+	setStatus(FX.statusActive)
+	refreshDroneButton()
+	bombButton.Text = FX.L("btn_bomb")
+	updateSpeedUI()
+	refreshLockUI()
+	updateEditorPanel()
+
+	if SW.refresh then
+		SW.refresh()
+	end
+
+	if FX.rangeLabel then
+		FX.rangeLabel.Text = string.format(FX.L("rng") .. " %d ST", Cfg.radarRange)
+	end
+end
+
+local function updateDroneUI()
+	local active = droneActive
+		and bombFlying
+		and selectedBomb ~= nil
+		and selectedBomb.Parent ~= nil
+
+	hud.Visible = active
+
+	if active then
+		if not droneSound.IsPlaying then
+			droneSound:Play()
+		end
+	elseif droneSound.IsPlaying then
+		droneSound:Stop()
+	end
+end
+
+--========================================================
+-- FIND BOMB
+--========================================================
+
+local function getBombTarget()
+	local origin = Camera.CFrame.Position
+	local direction = Camera.CFrame.LookVector * 1500
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- v20: bombs that already orbit you (swarm) are ignored by the aim ray
+	local ignore = { LP.Character }
+
+	for _, b in ipairs(SW.bombs) do
+		table.insert(ignore, b.part)
+	end
+
+	params.FilterDescendantsInstances = ignore
+
+	local result = workspace:Raycast(origin, direction, params)
+
+	if not result then
+		return nil
+	end
+
+	local obj = result.Instance
+
+	for _ = 1, 8 do
+		if not obj then
+			break
+		end
+
+		local name = string.lower(obj.Name)
+
+		if string.find(name, "bomb") or string.find(name, "bom") then
+			if obj:IsA("BasePart") then
+				return obj
+			end
+
+			local p = obj:FindFirstChildWhichIsA("BasePart", true)
+
+			if p then
+				return p
+			end
+		end
+
+		obj = obj.Parent
+	end
+
+	return nil
+end
+
+--========================================================
+-- PHYSICS (unchanged)
+--========================================================
+
+local attachment
+local velocity
+local orientation
+
+local function clearPhysics()
+	if velocity then
+		velocity:Destroy()
+		velocity = nil
+	end
+
+	if orientation then
+		orientation:Destroy()
+		orientation = nil
+	end
+
+	if attachment then
+		attachment:Destroy()
+		attachment = nil
+	end
+end
+
+local function setupPhysics(part)
+	clearPhysics()
+
+	attachment = Instance.new("Attachment")
+	attachment.Parent = part
+
+	velocity = Instance.new("LinearVelocity")
+	velocity.Attachment0 = attachment
+	velocity.MaxForce = math.huge
+	velocity.VectorVelocity = Vector3.zero
+	velocity.Parent = part
+
+	orientation = Instance.new("AlignOrientation")
+	orientation.Attachment0 = attachment
+	orientation.MaxTorque = math.huge
+	orientation.Responsiveness = 200
+	orientation.Parent = part
+end
+
+--========================================================
+-- CAMERA ANGLES
+-- yaw/pitch convention:
+--   yaw   = atan2(-x, -z)
+--   pitch = asin(y)
+-- forward = (-sin(yaw)cos(pitch), sin(pitch), -cos(yaw)cos(pitch))
+--========================================================
+
+local function readCameraAngles()
+	local look = Camera.CFrame.LookVector
+
+	yaw = math.atan2(-look.X, -look.Z)
+	pitch = math.asin(math.clamp(look.Y, -1, 1))
+
+	targetYaw = yaw
+	targetPitch = pitch
+end
+
+local function getLookVector()
+	local cp = math.cos(pitch)
+	return Vector3.new(-math.sin(yaw) * cp, math.sin(pitch), -math.cos(yaw) * cp)
+end
+
+--========================================================
+-- CONTACTS + LOCK-ON
+-- PLAYERS ONLY. NPCs are never added, so they can't be locked.
+-- v16: each contact has .allowed (false for friends when FRIEND CHECK is on):
+-- those show on the radar (green) but can't be locked.
+--========================================================
+
+-- friend state is fetched in the background (IsFriendsWith yields)
+function FX.askFriend(plr)
+	if Cfg.friendAsked[plr.UserId] then
+		return
+	end
+
+	Cfg.friendAsked[plr.UserId] = true
+
+	task.spawn(function()
+		local ok, res = pcall(function()
+			return LP:IsFriendsWith(plr.UserId)
+		end)
+
+		Cfg.friends[plr.UserId] = ok and res == true
+	end)
+end
+
+function FX.allowed(plr)
+	if Cfg.friendCheck then
+		FX.askFriend(plr)
+
+		-- only a confirmed "not a friend" (false) may be locked
+		if Cfg.friends[plr.UserId] ~= false then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function scanContacts()
+	table.clear(contacts)
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP then
+			local model = plr.Character
+			local hum = model and model:FindFirstChildOfClass("Humanoid")
+
+			if hum and hum.Health > 0 then
+				local root = model:FindFirstChild("HumanoidRootPart")
+					or hum.RootPart
+					or model:FindFirstChild("Torso")
+					or model:FindFirstChild("UpperTorso")
+					or model:FindFirstChild("Head")
+
+				if root and root:IsA("BasePart") and root.Parent then
+					table.insert(contacts, {
+						root = root,
+						hum = hum,
+						player = plr,
+						allowed = FX.allowed(plr),
+					})
+				end
+			end
+		end
+	end
+end
+
+-- point to aim at: the head if it exists, otherwise a bit above the root
+local function getAimPoint(root)
+	local model = root.Parent
+	local head = model and model:FindFirstChild("Head")
+
+	if head then
+		return head.Position
+	end
+
+	return root.Position + Vector3.new(0, 1.5, 0)
+end
+
+-- v18: lockable targets = allowed players in FRONT of the camera (not behind it),
+-- any distance, sorted nearest first
+function FX.candidates()
+	local list = {}
+
+	if not selectedBomb then
+		return list
+	end
+
+	local bombPos = selectedBomb.Position
+
+	for _, c in ipairs(contacts) do
+		if c.allowed and c.root.Parent and c.hum.Health > 0 then
+			local aim = getAimPoint(c.root)
+			local dist = (aim - bombPos).Magnitude
+
+			-- Z > 0 means the target is in front of the camera
+			if dist > 1 and Camera:WorldToViewportPoint(aim).Z > 0 then
+				table.insert(list, { root = c.root, dist = dist })
+			end
+		end
+	end
+
+	table.sort(list, function(a, b)
+		return a.dist < b.dist
+	end)
+
+	return list
+end
+
+-- nearest target (far is fine)
+local function findLockTarget()
+	local list = FX.candidates()
+
+	return list[1] and list[1].root or nil
+end
+
+-- NEXT TARGET: cycles through all players, nearest first
+function FX.cycleTarget()
+	if not droneActive or not selectedBomb then
+		return
+	end
+
+	if not lockEnabled then
+		setLock(true)
+		return
+	end
+
+	scanContacts()
+
+	local list = FX.candidates()
+
+	if #list < 2 then
+		showMessage(FX.L("m_noother"), THEME.Warn)
+		playUI("Error")
+		return
+	end
+
+	local idx = 0
+
+	for i, e in ipairs(list) do
+		if e.root == lockRoot then
+			idx = i
+			break
+		end
+	end
+
+	lockRoot = list[idx % #list + 1].root
+
+	showMessage(FX.L("m_switched"), THEME.Danger)
+	playUI("On")
+end
+
+-- v19: BOOST = speed multiplier (BOOST POWER) for a few seconds, then a cooldown.
+-- With no direction key held, the boost pushes the drone forward along the camera.
+function FX.doBoost()
+	if not droneActive or not bombFlying or not selectedBomb or editMode then
+		return
+	end
+
+	local now = os.clock()
+
+	if now < FX.boostUntil then
+		return
+	end
+
+	if now < FX.boostReadyAt then
+		showMessage(FX.L("m_boost_cd"), THEME.Warn)
+		playUI("Error")
+		return
+	end
+
+	FX.boostUntil = now + FX.boostTime
+	FX.boostReadyAt = FX.boostUntil + FX.boostCooldown
+
+	showMessage(FX.L("m_boost"), THEME.Warn)
+	playUI("On")
+end
+
+function setLock(on, reason)
+	if on then
+		if not droneActive or not selectedBomb then
+			return
+		end
+
+		scanContacts() -- fresh player list
+		local t = findLockTarget()
+
+		if not t then
+			showMessage(FX.L("m_notarget"), THEME.Danger)
+			playUI("Error")
+			return
+		end
+
+		lockRoot = t
+		lockEnabled = true
+
+		showMessage(FX.L("m_locked"), THEME.Danger)
+		playUI("On")
+	else
+		local wasLocked = lockEnabled
+
+		lockEnabled = false
+		lockRoot = nil
+
+		if reason then
+			showMessage(reason, THEME.Warn)
+		end
+
+		if wasLocked then
+			playUI("Off")
+		end
+	end
+
+	refreshLockUI()
+end
+
+local function updateReticle(bombPos)
+	lockGui.Enabled = droneActive and bombFlying
+
+	if lockEnabled and lockRoot and lockRoot.Parent then
+		local aimPos = getAimPoint(lockRoot)
+		local sp = Camera:WorldToViewportPoint(aimPos)
+
+		setReticleColor(THEME.Danger)
+
+		if sp.Z > 0 then
+			reticle.Position = UDim2.fromOffset(sp.X, sp.Y)
+			reticle.Size = UDim2.fromOffset(64, 64)
+
+			local dist = (aimPos - bombPos).Magnitude
+			lockLabel.Text = string.format(FX.L("lock_lbl") .. "  %04d ST", math.floor(dist))
+
+			InfoCard.update(lockRoot, aimPos)
+		else
+			reticle.Position = UDim2.fromScale(0.5, 0.5)
+			reticle.Size = UDim2.fromOffset(RET_SIZE, RET_SIZE)
+			lockLabel.Text = FX.L("tgt_behind")
+			InfoCard.hide()
+		end
+	else
+		setReticleColor(HUD_GREEN)
+		reticle.Position = UDim2.fromScale(0.5, 0.5)
+		reticle.Size = UDim2.fromOffset(RET_SIZE, RET_SIZE)
+		lockLabel.Text = ""
+		InfoCard.hide()
+	end
+end
+
+--========================================================
+-- RADAR UPDATE (positions, throttled)
+-- Visibility/fade is computed every frame in RenderStepped
+-- from the sweep position, so blips fade out behind the sweep.
+--========================================================
+
+local function updateRadar(bombPos, fwdFlat, rightVec)
+	local r = RADAR_SIZE / 2 - 8
+	local used = 0
+	local range = Cfg.radarRange
+
+	for _, c in ipairs(contacts) do
+		if used >= #radarDots then
+			break
+		end
+
+		if c.root.Parent then
+			local d = c.root.Position - bombPos
+			local dx = d:Dot(rightVec)
+			local dz = d:Dot(fwdFlat)
+
+			if Vector2.new(dx, dz).Magnitude <= range then
+				used += 1
+
+				local dot = radarDots[used]
+				local isLocked = lockEnabled and c.root == lockRoot
+
+				dot.Position = UDim2.fromOffset(
+					RADAR_SIZE / 2 + dx / range * r,
+					RADAR_SIZE / 2 - dz / range * r
+				)
+
+				dot.Size = isLocked and UDim2.fromOffset(11, 11) or UDim2.fromOffset(7, 7)
+				dot.BackgroundColor3 = isLocked and THEME.Danger
+					or (c.allowed and THEME.Warn or THEME.Accent)
+
+				-- bearing measured clockwise from forward (screen up)
+				radarBlips[used] = {
+					bearing = math.deg(math.atan2(dx, dz)) % 360,
+					locked = isLocked,
+				}
+			end
+		end
+	end
+
+	radarBlipCount = used
+
+	for i = used + 1, #radarDots do
+		radarDots[i].Visible = false
+	end
+end
+
+--========================================================
+-- NO SIGNAL (glitch screen, exactly 1 second, with sound)
+-- Flash -> static + tearing -> "NO SIGNAL" with RGB split ->
+-- smooth fade out. Sounds are generated from built-in sounds
+-- (buzz + glitch ticks + low thud), no external asset needed.
+--========================================================
+
+function FX.noSignal()
+	if not Cfg.noSignal or FX.nsBusy then
+		return
+	end
+
+	FX.nsBusy = true
+
+	local DURATION = 1.0
+	local vp = Camera.ViewportSize
+	local rng = Random.new()
+
+	local sg = Instance.new("ScreenGui")
+	sg.Name = "DroneNoSignal"
+	sg.ResetOnSpawn = false
+	sg.IgnoreGuiInset = true
+	sg.DisplayOrder = 100
+	sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	sg.Parent = PlayerGui
+
+	local root = Instance.new("Frame")
+	root.Size = UDim2.fromScale(1, 1)
+	root.BackgroundColor3 = Color3.new(1, 1, 1)
+	root.BorderSizePixel = 0
+	root.ClipsDescendants = true
+	root.Parent = sg
+
+	-- static bars (re-randomized every frame)
+	local bars = {}
+
+	for i = 1, 64 do
+		local f = Instance.new("Frame")
+		f.BorderSizePixel = 0
+		f.BackgroundTransparency = 1
+		f.ZIndex = 2
+		f.Parent = root
+		bars[i] = f
+	end
+
+	-- CRT scanlines (static)
+	for i = 0, 47 do
+		local l = Instance.new("Frame")
+		l.Size = UDim2.new(1, 0, 0, 2)
+		l.Position = UDim2.fromScale(0, i / 48)
+		l.BackgroundColor3 = Color3.new(0, 0, 0)
+		l.BackgroundTransparency = 0.8
+		l.BorderSizePixel = 0
+		l.ZIndex = 3
+		l.Parent = root
+	end
+
+	local textSize = math.clamp(math.floor(vp.Y * 0.1), 30, 72)
+
+	local function makeTitle(color, z)
+		local t = Instance.new("TextLabel")
+		t.Size = UDim2.new(1, 0, 0, textSize + 10)
+		t.AnchorPoint = Vector2.new(0.5, 0.5)
+		t.Position = UDim2.new(0.5, 0, 0.5, -10)
+		t.BackgroundTransparency = 1
+		t.Text = FX.L("ns_title")
+		t.Font = Enum.Font.GothamBlack
+		t.TextSize = textSize
+		t.TextColor3 = color
+		t.TextTransparency = 1
+		t.ZIndex = z
+		t.Parent = root
+		return t
+	end
+
+	local red = makeTitle(Color3.fromRGB(255, 40, 60), 5)
+	local cyan = makeTitle(Color3.fromRGB(0, 230, 255), 6)
+	local main = makeTitle(Color3.fromRGB(240, 245, 245), 7)
+
+	local sub = hudText(root, FX.L("ns_sub"), UDim2.new(1, 0, 0, 22), UDim2.new(0, 0, 0.5, math.floor(textSize * 0.6)), Enum.TextXAlignment.Center)
+	sub.TextSize = math.clamp(math.floor(vp.Y * 0.03), 12, 20)
+	sub.TextColor3 = THEME.Danger
+	sub.TextStrokeTransparency = 1
+	sub.ZIndex = 8
+
+	local cornerA = hudText(root, FX.L("ns_a"), UDim2.fromOffset(260, 18), UDim2.fromOffset(16, 14))
+	cornerA.TextColor3 = THEME.Danger
+	cornerA.TextStrokeTransparency = 1
+	cornerA.ZIndex = 8
+
+	local cornerB = hudText(root, FX.L("ns_b"), UDim2.fromOffset(260, 18), UDim2.new(0, 16, 1, -30))
+	cornerB.TextColor3 = Color3.fromRGB(235, 240, 240)
+	cornerB.TextStrokeTransparency = 1
+	cornerB.ZIndex = 8
+
+	-- sounds
+	local sounds = {}
+
+	local function mk(id, vol, speed, looped)
+		local ok, s = pcall(function()
+			local snd = Instance.new("Sound")
+			snd.Name = "DroneUI_NoSignal"
+			snd.SoundId = id
+			snd.Volume = vol
+			snd.PlaybackSpeed = speed
+			snd.Looped = looped or false
+			snd.Parent = SoundService
+			return snd
+		end)
+
+		if ok and s then
+			table.insert(sounds, s)
+			return s
+		end
+
+		return nil
+	end
+
+	local buzz = mk("rbxasset://sounds/electronicpingshort.wav", 0.5, 0.5, true)
+
+	if buzz then
+		local dist = Instance.new("DistortionSoundEffect")
+		dist.Level = 0.85
+		dist.Parent = buzz
+	end
+
+	local thud = mk("rbxasset://sounds/electronicpingshort.wav", 0.9, 0.25, false)
+	local glitchTick = mk("rbxasset://sounds/clickfast.wav", 0.5, 1, false)
+	local custom = FX.STATIC_SOUND_ID ~= "" and mk(FX.STATIC_SOUND_ID, 0.7, 1, false) or nil
+
+	if buzz then buzz:Play() end
+	if thud then thud:Play() end
+	if custom then custom:Play() end
+
+	local t0 = os.clock()
+	local lastBuzz = 0
+	local conn
+
+	conn = RunService.RenderStepped:Connect(function()
+		local t = os.clock() - t0
+
+		if t >= DURATION then
+			conn:Disconnect()
+			sg:Destroy()
+
+			for _, s in ipairs(sounds) do
+				s:Stop()
+				s:Destroy()
+			end
+
+			FX.nsBusy = false
+			return
+		end
+
+		-- smooth fade out during the last 0.28 s
+		local fo = math.clamp((t - 0.72) / 0.28, 0, 1)
+		local alpha = fo * fo * (3 - 2 * fo)
+
+		-- white flash that settles into dark static
+		local fl = math.clamp(t / 0.1, 0, 1)
+		root.BackgroundColor3 = Color3.new(1, 1, 1):Lerp(Color3.fromRGB(10, 12, 14), fl)
+		root.BackgroundTransparency = alpha
+
+		local burst = t < 0.25 or math.noise(t * 14, 0.37, 0.91) > 0.28
+		local intensity = t < 0.1 and 1 or (burst and 0.8 or 0.45)
+
+		for _, f in ipairs(bars) do
+			if rng:NextNumber() < intensity then
+				local h = rng:NextInteger(1, 4)
+
+				if rng:NextNumber() < 0.08 then
+					h = rng:NextInteger(8, 38)
+				end
+
+				local w = rng:NextNumber(0.15, 1)
+				local g = rng:NextInteger(40, 255)
+				local tint = rng:NextNumber()
+
+				f.Size = UDim2.new(w, 0, 0, h)
+				f.Position = UDim2.new(rng:NextNumber(0, 1 - w), 0, rng:NextNumber(), 0)
+
+				if tint < 0.1 then
+					f.BackgroundColor3 = Color3.fromRGB(255, 40, 60)
+				elseif tint < 0.2 then
+					f.BackgroundColor3 = Color3.fromRGB(0, 230, 255)
+				else
+					f.BackgroundColor3 = Color3.fromRGB(g, g, g)
+				end
+
+				f.BackgroundTransparency = math.clamp(1 - (1 - alpha) * rng:NextNumber(0.25, 0.8), 0, 1)
+			else
+				f.BackgroundTransparency = 1
+			end
+		end
+
+		-- title: fades in at 0.06 s, flickers during glitch bursts, RGB split
+		local tIn = math.clamp((t - 0.06) / 0.12, 0, 1)
+		local base = 1 - tIn * (1 - alpha)
+		local flick = (burst and rng:NextNumber() < 0.35) and 0.55 or 0
+		local tr = math.clamp(base + flick, 0, 1)
+		local jitter = burst and rng:NextInteger(-6, 6) or 0
+		local split = burst and rng:NextInteger(4, 12) or 2
+
+		main.Position = UDim2.new(0.5, jitter, 0.5, -10)
+		red.Position = UDim2.new(0.5, jitter - split, 0.5, -10)
+		cyan.Position = UDim2.new(0.5, jitter + split, 0.5, -10)
+
+		main.TextTransparency = tr
+		red.TextTransparency = math.clamp(tr + 0.35, 0, 1)
+		cyan.TextTransparency = math.clamp(tr + 0.35, 0, 1)
+
+		local blink = (math.floor(t * 8) % 2 == 0) and tr or math.clamp(tr + 0.6, 0, 1)
+
+		sub.TextTransparency = blink
+		cornerA.TextTransparency = blink
+		cornerB.TextTransparency = math.clamp(base + 0.2, 0, 1)
+
+		-- sound: buzz pitch jumps, glitch ticks on bursts, smooth fade out
+		if buzz then
+			if t - lastBuzz > 0.045 then
+				lastBuzz = t
+				buzz.PlaybackSpeed = 0.35 + rng:NextNumber() * 1.5
+			end
+
+			buzz.Volume = 0.5 * (1 - alpha) * (burst and 1 or 0.55)
+		end
+
+		if glitchTick and burst and rng:NextNumber() < 0.25 then
+			glitchTick.PlaybackSpeed = 0.6 + rng:NextNumber() * 2
+			glitchTick:Play()
+		end
+	end)
+end
+
+--========================================================
+-- IMPACT (detonate on locked target)
+--========================================================
+
+local function triggerImpact(pos)
+	-- client-side visual; real damage must be applied on the server
+	local ex = Instance.new("Explosion")
+	ex.Position = pos
+	ex.BlastRadius = 12
+	ex.BlastPressure = 0
+	ex.DestroyJointRadiusPercent = 0
+	ex.ExplosionType = Enum.ExplosionType.NoCraters
+	ex.Parent = workspace
+
+	playUI("Error")
+	FX.noSignal()
+	stopDrone()
+end
+
+--========================================================
+-- SELECT BOMB
+--========================================================
+
+bombButton.Activated:Connect(function()
+	if droneActive or editMode then
+		return
+	end
+
+	local found = getBombTarget()
+
+	if found then
+		selectedBomb = found
+
+		bombButton.Text = FX.L("btn_bomb_ok")
+		applyButtonStyle(bombButton, THEME.OnBase, THEME.Accent, 0.3)
+		playUI("On")
+	else
+		selectedBomb = nil
+
+		bombButton.Text = FX.L("btn_bomb_none")
+		applyButtonStyle(bombButton, THEME.ErrorBase, THEME.Danger, 0.3)
+		playUI("Error")
+	end
+
+	task.delay(1, function()
+		if not droneActive then
+			resetBombButton()
+		end
+	end)
+end)
+
+--========================================================
+-- STOP
+--========================================================
+
+function stopDrone()
+	local wasActive = droneActive
+
+	droneActive = false
+	bombFlying = false
+
+	forward = false
+	backward = false
+	left = false
+	right = false
+
+	clearPhysics()
+
+	selectedBomb = nil
+	cameraTouch = nil
+	camReady = false
+
+	setLock(false)
+
+	FX.boostUntil = 0
+	FX.boostReadyAt = 0
+	FX.boostText = ""
+	FX.hitT = nil
+	FX.autoAtk = false
+	FX.lastBombPos = nil
+
+	if rightMouseDown then
+		rightMouseDown = false
+		UIS.MouseBehavior = Enum.MouseBehavior.Default
+	end
+
+	hud.Visible = false
+	lockGui.Enabled = false
+	InfoCard.hide()
+
+	-- v15: reset speed fx + camera look-at smoothing + FOV
+	FX.speedK = 0
+	FX.aim = nil
+	FX.linesOn = false
+	FX.fxGui.Enabled = false
+
+	if wasActive then
+		Camera.FieldOfView = FX.origFov
+	end
+
+	if droneSound.IsPlaying then
+		droneSound:Stop()
+	end
+
+	Camera.CameraType = Enum.CameraType.Custom
+
+	toggle.Visible = true
+
+	refreshDroneButton()
+	resetBombButton()
+	setStatus(false)
+
+	lastPosition = nil
+	flightStart = 0
+	maxAltitude = 0
+
+	if wasActive then
+		playUI("Off")
+	end
+end
+
+--========================================================
+-- START
+--========================================================
+
+function startDrone()
+	if editMode then
+		return
+	end
+
+	if not selectedBomb then
+		selectedBomb = getBombTarget()
+
+		if not selectedBomb then
+			droneButton.Text = FX.L("btn_drone_nobomb")
+			applyButtonStyle(droneButton, THEME.ErrorBase, THEME.Danger, 0.3)
+			playUI("Error")
+
+			task.delay(1, function()
+				if not droneActive then
+					refreshDroneButton()
+				end
+			end)
+
+			return
+		end
+	end
+
+	readCameraAngles()
+	setupPhysics(selectedBomb)
+
+	droneActive = true
+	bombFlying = true
+	camReady = false
+
+	flightStart = os.clock()
+	lastPosition = selectedBomb.Position
+	maxAltitude = selectedBomb.Position.Y
+	lastUpdate = os.clock()
+	nextRadarScan = 0
+
+	FX.origFov = Camera.FieldOfView
+	FX.speedK = 0
+	FX.aim = nil
+
+	Camera.CameraType = Enum.CameraType.Scriptable
+
+	setMenuOpen(false, true)
+	toggle.Visible = false
+
+	refreshDroneButton()
+	setStatus(true)
+	refreshLockUI()
+	playUI("On")
+
+	updateDroneUI()
+	updateSpeedUI()
+	showMessage(FX.L("m_link"), HUD_GREEN)
+end
+
+droneButton.Activated:Connect(function()
+	if droneActive then
+		stopDrone()
+	else
+		startDrone()
+	end
+end)
+
+--========================================================
+-- DIRECTION BUTTONS
+--========================================================
+
+local function bindDirection(button, name)
+	button.InputBegan:Connect(function(input)
+		if not droneActive then
+			return
+		end
+
+		if isPress(input) then
+			if name == "forward" then
+				forward = true
+			elseif name == "backward" then
+				backward = true
+			elseif name == "left" then
+				left = true
+			elseif name == "right" then
+				right = true
+			end
+		end
+	end)
+
+	button.InputEnded:Connect(function(input)
+		if isPress(input) then
+			if name == "forward" then
+				forward = false
+			elseif name == "backward" then
+				backward = false
+			elseif name == "left" then
+				left = false
+			elseif name == "right" then
+				right = false
+			end
+		end
+	end)
+end
+
+bindDirection(upButton, "forward")
+bindDirection(downButton, "backward")
+bindDirection(leftButton, "left")
+bindDirection(rightButton, "right")
+
+--========================================================
+-- CAMERA LOOK (swipe / right mouse)
+--========================================================
+
+local function isControlUI(object)
+	return object == toggle
+		or object == menu
+		or object:IsDescendantOf(menu)
+		or object:IsDescendantOf(toggle)
+		or object:IsDescendantOf(controls)
+		or object:IsDescendantOf(radar)
+		or object:IsDescendantOf(bottomGroup)
+		or object:IsDescendantOf(editLayer)
+		or object:IsA("GuiButton")
+end
+
+local function applyLook(dx, dy, sensitivity)
+	if lockEnabled then
+		setLock(false, FX.L("m_lockbroken"))
+	end
+
+	sensitivity = sensitivity * (Cfg.sens / 100)
+
+	targetYaw -= dx * sensitivity
+	targetPitch = math.clamp(targetPitch - dy * sensitivity, -MAX_PITCH, MAX_PITCH)
+end
+
+UIS.InputBegan:Connect(function(input, gp)
+	if not droneActive or editMode then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.Touch then
+		if gp or cameraTouch then
+			return
+		end
+
+		local pos = input.Position
+		local objects = gui:GetGuiObjectsAtPosition(pos.X, pos.Y)
+
+		for _, object in ipairs(objects) do
+			if isControlUI(object) then
+				return
+			end
+		end
+
+		cameraTouch = input
+
+	elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+		if gp then
+			return
+		end
+
+		rightMouseDown = true
+		UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if not droneActive or editMode then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.Touch then
+		if input == cameraTouch then
+			applyLook(input.Delta.X, input.Delta.Y, CAMERA_SENSITIVITY)
+		end
+
+	elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+		if rightMouseDown then
+			applyLook(input.Delta.X, input.Delta.Y, MOUSE_SENSITIVITY)
+		end
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input == cameraTouch then
+		cameraTouch = nil
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		if rightMouseDown then
+			rightMouseDown = false
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
+	end
+end)
+
+--========================================================
+-- KEYBOARD
+--========================================================
+
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then
+		return
+	end
+
+	local key = input.KeyCode
+
+	if key == Enum.KeyCode.F then
+		if droneActive then
+			stopDrone()
+		else
+			startDrone()
+		end
+
+	elseif key == Enum.KeyCode.L then
+		if droneActive then
+			setLock(not lockEnabled)
+		end
+
+	elseif key == Enum.KeyCode.T then
+		if droneActive then
+			FX.cycleTarget()
+		end
+
+	elseif key == Enum.KeyCode.B then
+		if droneActive then
+			FX.doBoost()
+		end
+
+	elseif key == Enum.KeyCode.R then
+		if droneActive then
+			FX.cycleRadar()
+		end
+
+	elseif key == Enum.KeyCode.W then
+		forward = true
+
+	elseif key == Enum.KeyCode.S then
+		backward = true
+
+	elseif key == Enum.KeyCode.A then
+		left = true
+
+	elseif key == Enum.KeyCode.D then
+		right = true
+
+	elseif key == Enum.KeyCode.Q then
+		changeSpeed(-SPEED_STEP)
+
+	elseif key == Enum.KeyCode.E then
+		changeSpeed(SPEED_STEP)
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then
+		forward = false
+	elseif input.KeyCode == Enum.KeyCode.S then
+		backward = false
+	elseif input.KeyCode == Enum.KeyCode.A then
+		left = false
+	elseif input.KeyCode == Enum.KeyCode.D then
+		right = false
+	end
+end)
+
+--========================================================
+-- MAIN FLIGHT LOOP
+--========================================================
+
+RunService.RenderStepped:Connect(function()
+	if not droneActive or not bombFlying or not selectedBomb then
+		hud.Visible = editMode
+		lockGui.Enabled = false
+		return
+	end
+
+	-- bomb was destroyed (it exploded): NO SIGNAL glitch, then back to the player
+	if not selectedBomb.Parent then
+		if FX.lastBombPos then
+			-- v23: the bomb is gone = it exploded, visual blast where it disappeared
+			local ex = Instance.new("Explosion")
+
+			ex.Position = FX.lastBombPos
+			ex.BlastRadius = 12
+			ex.BlastPressure = 0
+			ex.DestroyJointRadiusPercent = 0
+			ex.ExplosionType = Enum.ExplosionType.NoCraters
+			ex.Parent = workspace
+
+			playUI("Error")
+		end
+
+		FX.noSignal()
+		stopDrone()
+		return
+	end
+
+	FX.lastBombPos = selectedBomb.Position
+
+	updateDroneUI()
+
+	local now = os.clock()
+	local dt = math.max(now - lastUpdate, 0.001)
+
+	FX.updateBoostUI(now)
+
+	-- radar scan (throttled)
+	if now >= nextRadarScan then
+		nextRadarScan = now + RADAR_RATE
+		scanContacts()
+	end
+
+	-- lock validity
+	if lockEnabled then
+		local model = lockRoot and lockRoot.Parent
+		local hum = model and model:FindFirstChildOfClass("Humanoid")
+
+		if not hum or hum.Health <= 0 then
+			local t = findLockTarget()
+
+			if t then
+				lockRoot = t
+			else
+				setLock(false, FX.L("m_targetlost"))
+			end
+		end
+	end
+
+	-- lock impact: bomb reached the locked target, detonate
+	if lockEnabled and lockRoot and lockRoot.Parent then
+		local aimNow = getAimPoint(lockRoot)
+		local distToAim = (aimNow - selectedBomb.Position).Magnitude
+		local hitDist = IMPACT_DIST
+
+		-- while boosting the bomb moves more studs per frame, so widen the hit zone
+		if now < FX.boostUntil then
+			hitDist = math.max(IMPACT_DIST, SPEED * (Cfg.boost / 100) * math.min(dt, 0.05) * 1.25)
+		end
+
+		-- v23: touching the target is NOT an explosion. The flight only ends when the bomb disappears.
+		-- Still there = push a moment, bounce away, hit again (automatic until it explodes).
+		if distToAim < hitDist and not FX.hitT then
+			local away = selectedBomb.Position - aimNow
+
+			away = away.Magnitude > 0.1 and away.Unit or -getLookVector()
+
+			local side = Vector3.new(-away.Z, 0, away.X)
+
+			side = side.Magnitude > 0.1 and side.Unit or Vector3.new(1, 0, 0)
+
+			FX.hitAway = (away + side * ((math.random() * 2 - 1) * 0.6) + Vector3.new(0, 0.35 + math.random() * 0.3, 0)).Unit
+			FX.hitT = now
+
+			showMessage(FX.L("sc_retry"), THEME.Warn)
+		end
+	end
+
+	-- lock aim: turn the nose toward the target's head every frame
+	if lockEnabled and lockRoot then
+		local toTarget = getAimPoint(lockRoot) - selectedBomb.Position
+
+		if toTarget.Magnitude > 1 then
+			local d = toTarget.Unit
+			local desiredYaw = math.atan2(-d.X, -d.Z)
+			local desiredPitch = math.asin(math.clamp(d.Y, -1, 1))
+
+			targetYaw = yaw + wrapAngle(desiredYaw - yaw)
+			targetPitch = math.clamp(desiredPitch, -MAX_PITCH, MAX_PITCH)
+		end
+	end
+
+	-- angle smoothing
+	local smooth = lockEnabled and LOCK_SMOOTHING or CAMERA_SMOOTHING
+	local alpha = 1 - math.exp(-smooth * dt)
+
+	yaw += wrapAngle(targetYaw - yaw) * alpha
+	pitch += (targetPitch - pitch) * alpha
+
+	local look = getLookVector()
+	local cameraRight = CFrame.lookAt(Vector3.zero, look).RightVector
+	local fwdFlat = Vector3.new(look.X, 0, look.Z)
+
+	if fwdFlat.Magnitude < 0.001 then
+		fwdFlat = Vector3.new(0, 0, -1)
+	else
+		fwdFlat = fwdFlat.Unit
+	end
+
+	-- flight direction
+	local direction = Vector3.zero
+
+	if forward then
+		direction += look
+	end
+
+	if backward then
+		direction -= look
+	end
+
+	if left then
+		direction -= cameraRight
+	end
+
+	if right then
+		direction += cameraRight
+	end
+
+	if direction.Magnitude > 0 then
+		direction = direction.Unit
+	end
+
+	-- v19 BOOST: temporary speed multiplier (forward along the camera if no key is held)
+	local boosting = now < FX.boostUntil
+
+	if boosting and direction.Magnitude == 0 then
+		direction = look
+	end
+
+	-- v23: automatic push / bounce / re-hit while the locked target is still alive
+	if FX.hitT or FX.autoAtk then
+		if lockEnabled and lockRoot and lockRoot.Parent then
+			local toAim = getAimPoint(lockRoot) - selectedBomb.Position
+			local toDir = toAim.Magnitude > 0.05 and toAim.Unit or look
+
+			if FX.hitT then
+				local since = now - FX.hitT
+
+				if since < FX.hitContact then
+					direction = toDir * 0.6
+				elseif since < FX.hitContact + FX.hitRetreat then
+					direction = FX.hitAway * 0.45
+				else
+					FX.hitT = nil
+					FX.autoAtk = true
+					direction = toDir
+				end
+			else
+				direction = toDir
+			end
+		else
+			FX.hitT = nil
+			FX.autoAtk = false
+		end
+	end
+
+	-- physics (unchanged, plus the boost multiplier)
+	if velocity then
+		velocity.VectorVelocity = direction * SPEED * (boosting and (Cfg.boost / 100) or 1)
+	end
+
+	if orientation and direction.Magnitude > 0 then
+		orientation.CFrame = CFrame.lookAt(Vector3.zero, direction)
+	end
+
+	-- camera (smoothed follow)
+	local bombPos = selectedBomb.Position
+
+	if not camReady then
+		camFocus = bombPos
+		camReady = true
+	end
+
+	camFocus = camFocus:Lerp(bombPos, 1 - math.exp(-CAMERA_FOLLOW * dt))
+
+	local camPos = camFocus - look * Cfg.camDist + Vector3.new(0, CAMERA_HEIGHT, 0)
+
+	local camLook = camPos + look
+
+	-- while locked, the camera looks at the target; the look-at point is
+	-- smoothed so switching targets glides instead of snapping
+	if lockEnabled and lockRoot and lockRoot.Parent then
+		local goal = getAimPoint(lockRoot)
+
+		if not FX.aim then
+			FX.aim = camPos + look * math.max((goal - camPos).Magnitude, 10)
+		end
+
+		FX.aim = FX.aim:Lerp(goal, 1 - math.exp(-10 * dt))
+		camLook = FX.aim
+	else
+		FX.aim = nil
+	end
+
+	local camCF = CFrame.lookAt(camPos, camLook)
+
+	-- v15 speed fx: camera shake that grows with speed
+	local k = FX.speedK
+
+	if k > 0.05 then
+		local sx = math.noise(now * 22, 0.1, 0.5) * 0.28 * k
+		local sy = math.noise(now * 25, 3.3, 1.7) * 0.28 * k
+		local roll = math.noise(now * 18, 7.1, 2.9) * math.rad(1.4) * k
+
+		camCF = camCF * CFrame.new(sx, sy, 0) * CFrame.Angles(0, 0, roll)
+	end
+
+	Camera.CameraType = Enum.CameraType.Scriptable
+	Camera.CFrame = camCF
+	Camera.FieldOfView = Cfg.fov + k * 14 -- FOV kick at high speed
+
+	-- telemetry values
+	local altitude = bombPos.Y
+	maxAltitude = math.max(maxAltitude, altitude)
+
+	local currentSpeed = 0
+
+	if lastPosition then
+		currentSpeed = (bombPos - lastPosition).Magnitude / dt
+	end
+
+	lastPosition = bombPos
+	lastUpdate = now
+
+	-- v15 speed fx: smooth intensity from the real speed + speed lines
+	local targetK = Cfg.speedFx and math.clamp((currentSpeed - 150) / 700, 0, 1) or 0
+
+	FX.speedK += (targetK - FX.speedK) * (1 - math.exp(-5 * dt))
+	FX.updateLines(dt)
+
+	local airTime = now - flightStart
+	local heading = math.deg(math.atan2(-look.X, -look.Z))
+
+	if heading < 0 then
+		heading += 360
+	end
+
+	local pitchDegrees = math.deg(pitch)
+	local throttle = math.clamp(direction.Magnitude, 0, 1) * 100
+
+	-- per-frame: ladder, reticle
+	ladder.Position = UDim2.new(0.5, 0, 0.5, pitchDegrees * PX_PER_DEG)
+	updateReticle(bombPos)
+
+	-- per-frame: radar sweep + trail
+	sweepAngle = (sweepAngle + dt * SWEEP_SPEED) % 360
+
+	-- the line points right (90° bearing) at rotation 0, so bearing = rotation + 90
+	local sweepBearing = (sweepAngle + 90) % 360
+
+	for i = 0, TRAIL_COUNT do
+		sweepHolders[i].Rotation = sweepAngle - i * TRAIL_STEP
+	end
+
+	-- per-frame: blips light up when the sweep passes, then fade out
+	for i = 1, #radarDots do
+		local dot = radarDots[i]
+
+		if i <= radarBlipCount then
+			local b = radarBlips[i]
+
+			if b.locked then
+				dot.Visible = true
+				dot.BackgroundTransparency = 0
+			else
+				-- how long ago the sweep passed this bearing
+				local behind = (sweepBearing - b.bearing) % 360
+				local age = behind / SWEEP_SPEED
+
+				if age < BLIP_FADE then
+					dot.Visible = true
+					dot.BackgroundTransparency = age / BLIP_FADE
+				else
+					dot.Visible = false
+				end
+			end
+		else
+			dot.Visible = false
+		end
+	end
+
+	-- throttled: text, tapes, radar positions
+	if now >= nextHudUpdate then
+		nextHudUpdate = now + HUD_RATE
+
+		updateHeadingTape(heading)
+		updateSpeedTape(SPEED)
+		updateAltTape(altitude)
+
+		headingReadout.Text = string.format("HDG %03d°", math.floor(heading))
+
+		local lockDist = nil
+
+		if lockEnabled and lockRoot then
+			lockDist = (getAimPoint(lockRoot) - bombPos).Magnitude
+		end
+
+		telemetry.Text = string.format(
+			"GS   %04d st/s\nMAX  %04d st\nAIR  %05.1f s\nTHR  %03d%%\nPIT  %+03d°\nTGT  %s",
+			math.floor(currentSpeed),
+			math.floor(maxAltitude),
+			airTime,
+			math.floor(throttle),
+			math.floor(pitchDegrees),
+			lockDist and string.format("%04d st", math.floor(lockDist)) or "--- st"
+		)
+
+		updateRadar(bombPos, fwdFlat, cameraRight)
+	end
+
+	if messageLabel.Text ~= "" and now > messageUntil then
+		messageLabel.Text = ""
+	end
+end)
+
+--========================================================
+-- v20 SWARM STRIKE
+--  • ADD (menu / panel / V): aim at a bomb, it joins the orbit ABOVE you
+--    (up to MAX BOMBS, 6 at most)
+--  • LOCK / NEXT: choose the target (the camera stays free, never locked)
+--  • LAUNCH (panel / G): the bombs scatter upward in different directions,
+--    after SCATTER TIME they all home in on the target by themselves
+--  • target dies in flight: bombs switch to the next target,
+--    or return to the orbit when nobody is left
+--  • LOCK OFF while launched = recall (bombs return to the orbit)
+--========================================================
+
+do
+	local env = (getgenv and getgenv()) or _G
+
+	-- script run again? stop the previous copy first (connections + bomb physics)
+	if type(env.__SwarmStrikeCleanup) == "function" then
+		pcall(env.__SwarmStrikeCleanup)
+	end
+
+	local conns = {}
+
+	local SCATTER_SPEED = 60     -- studs/s right after LAUNCH (slows down while scattering)
+	local STAGGER = 0.12         -- seconds between bombs when they start attacking
+	local ORBIT_APPROACH = 170   -- max speed of a bomb flying into / back to the orbit
+	local TURN_FAR = 7           -- homing turn rate (far from the target)
+	local TURN_NEAR = 16         -- homing turn rate (close to the target)
+	local NEAR_DIST = 80
+	local HIT_GAP = 0.4          -- v22: pause after a hit before the next bomb dives
+	local ATTACK_MAX = 5         -- v22: if a diving bomb needs longer than this, the next one may go too
+	local SPIN_MULT = 4          -- v22 orbit target: orbit speed x4 right before the hit
+	local WAVES = 3              -- v22: number of wave crests around the ring
+	local WAVE_SPEED = 2.5       -- v22: how fast the waves travel (rad/s)
+	local ORBIT_TGT_LIFT = 4     -- v22: orbit ring around the target sits this high above its head
+	local SPIN_RATE = 100        -- v22: self-spin of a diving bomb (rad/s) = hits much harder
+	local CONTACT_WAIT = 0.3     -- v23: after touching the target the bomb keeps pushing this long (it may explode)
+	local RETREAT_TIME = 0.4     -- v23: not exploded = it bounces away for this long, then hits again
+	local RETREAT_MIN = 100      -- v23: minimum bounce-away speed
+	local TN_BOTTOM = 0.35       -- v22 tornado: width at the bottom = this fraction of the top width
+	local TN_SQUEEZE = 0.35      -- v22 tornado: the funnel gets this much narrower during the spin-up
+
+	-- target box on screen (own ScreenGui, same coordinates as the lock reticle)
+	local fxGui = Instance.new("ScreenGui")
+	fxGui.Name = "DroneSwarmFx"
+	fxGui.ResetOnSpawn = false
+	fxGui.IgnoreGuiInset = true
+	fxGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	fxGui.Parent = PlayerGui
+
+	local box = Instance.new("Frame")
+	box.Name = "SwarmTarget"
+	box.Size = UDim2.fromOffset(64, 64)
+	box.AnchorPoint = Vector2.new(0.5, 0.5)
+	box.BackgroundTransparency = 1
+	box.Visible = false
+	box.Parent = fxGui
+
+	addStroke(box, THEME.Danger, 2, 0)
+
+	local boxTag = hudText(box, "", UDim2.fromOffset(180, 14), UDim2.new(0.5, -90, 1, 4), Enum.TextXAlignment.Center)
+	boxTag.TextColor3 = THEME.Danger
+	boxTag.TextSize = 12
+
+	----------------------------------------------------------
+	-- small helpers
+	----------------------------------------------------------
+
+	function SW.say(text, color)
+		SW.msgLabel.Text = text
+		SW.msgLabel.TextColor3 = color or HUD_GREEN
+		SW.msgUntil = os.clock() + 2.5
+	end
+
+	function SW.playerRoot()
+		local ch = LP.Character
+
+		return ch and ch:FindFirstChild("HumanoidRootPart") or nil
+	end
+
+	function SW.targetName()
+		local model = SW.lockRoot and SW.lockRoot.Parent
+		local plr = model and Players:GetPlayerFromCharacter(model)
+
+		return plr and plr.Name or "?"
+	end
+
+	function SW.has(part)
+		for _, b in ipairs(SW.bombs) do
+			if b.part == part then
+				return true
+			end
+		end
+
+		return false
+	end
+
+	function SW.orbiters()
+		local list = {}
+
+		for _, b in ipairs(SW.bombs) do
+			if b.phase == "orbit" then
+				table.insert(list, b)
+			end
+		end
+
+		return list
+	end
+
+	-- removes the physics objects and gives the bomb its normal collision back
+	function SW.release(b)
+		if b.av then
+			b.av:Destroy()
+			b.av = nil
+		end
+
+		if b.lv then
+			b.lv:Destroy()
+		end
+
+		if b.ao then
+			b.ao:Destroy()
+		end
+
+		if b.att then
+			b.att:Destroy()
+		end
+
+		if b.part and b.part.Parent then
+			pcall(function()
+				b.part.CanCollide = b.cc
+			end)
+		end
+	end
+
+	-- v26: NO SPIN any more. The bomb keeps its orientation lock, nose first along the flight path.
+	function SW.startSpin(b)
+		if b.av then
+			b.av:Destroy()
+			b.av = nil
+		end
+
+		if b.ao then
+			b.ao.Enabled = true
+		end
+	end
+
+	function SW.stopSpin(b)
+		if b.av then
+			b.av:Destroy()
+			b.av = nil
+		end
+
+		if b.ao then
+			b.ao.Enabled = true
+		end
+	end
+
+	-- client-side visual, same as the FPV drone impact
+	function SW.explode(pos)
+		local ex = Instance.new("Explosion")
+		ex.Position = pos
+		ex.BlastRadius = 12
+		ex.BlastPressure = 0
+		ex.DestroyJointRadiusPercent = 0
+		ex.ExplosionType = Enum.ExplosionType.NoCraters
+		ex.Parent = workspace
+	end
+
+	----------------------------------------------------------
+	-- UI texts
+	----------------------------------------------------------
+
+	-- light refresh (labels only, safe to call many times per second)
+	function SW.refreshLive()
+		local n = #SW.bombs
+		local waiting = #SW.orbiters()
+		local flying = n - waiting
+
+		local stateText = flying > 0 and FX.L("sw_launched") or FX.L("sw_orbit")
+
+		SW.titleLabel.Text = FX.L("sw_title") .. " " .. n .. "/" .. Cfg.swarmMax .. " • " .. stateText
+		SW.titleLabel.TextColor3 = flying > 0 and THEME.Danger or HUD_GREEN
+
+		local lockColor = SW.lockOn and THEME.Danger or HUD_GREEN
+
+		SW.lockBtn.Text = SW.lockOn and FX.L("lock_on") or FX.L("lock_off")
+		SW.lockBtn.TextColor3 = lockColor
+		SW.lockStroke.Color = lockColor
+
+		local launchColor = waiting > 0 and THEME.Danger or THEME.Muted
+
+		SW.launchBtn.Text = (SW.mode == "orbit" or SW.mode == "tornado") and FX.L("btn_orbit_attack") or FX.L("sw_launch")
+		SW.launchBtn.TextColor3 = launchColor
+		SW.launchStroke.Color = launchColor
+
+		if SW.lockOn and SW.lockRoot and SW.lockRoot.Parent then
+			local me = SW.playerRoot()
+			local d = me and (getAimPoint(SW.lockRoot) - me.Position).Magnitude or 0
+			local info = string.format("%s  %d st", SW.targetName(), math.floor(d))
+
+			SW.tgtLabel.Text = FX.L("sw_tgt") .. "  " .. info
+			boxTag.Text = info
+		elseif SW.mode == "scatter" then
+			SW.tgtLabel.Text = FX.L("sw_tgt") .. "  " .. FX.L("sc_random") .. " x" .. #SW.bombs
+		else
+			SW.tgtLabel.Text = FX.L("sw_tgt") .. "  ---"
+		end
+	end
+
+	-- full refresh (also the ADD buttons in the menu: tab 2 and tab 3)
+	function SW.refresh()
+		SW.applyCollapse()
+
+		local n = #SW.bombs
+		local full = n >= Cfg.swarmMax
+
+		for _, btn in ipairs({ SW.addButton, SW.addButton2, SW.addButton3, SW.addButton4 }) do
+			btn.Text = FX.L("btn_swarm_add") .. " (" .. n .. "/" .. Cfg.swarmMax .. ")"
+
+			applyButtonStyle(
+				btn,
+				full and THEME.OnBase or THEME.Panel,
+				full and THEME.Accent or THEME.Cyan,
+				full and 0.3 or 0.75
+			)
+		end
+
+		if SW.paintList then
+			SW.paintList()
+		end
+
+		SW.refreshLive()
+	end
+
+	local function flashAdd(text)
+		for _, btn in ipairs({ SW.addButton, SW.addButton2, SW.addButton3, SW.addButton4 }) do
+			btn.Text = text
+			applyButtonStyle(btn, THEME.ErrorBase, THEME.Danger, 0.3)
+		end
+
+		task.delay(1, function()
+			SW.refresh()
+		end)
+	end
+
+	----------------------------------------------------------
+	-- targets (players only, FRIEND CHECK respected)
+	----------------------------------------------------------
+
+	-- allowed players, nearest to you first
+	function SW.list()
+		local list = {}
+		local me = SW.playerRoot()
+		local origin = me and me.Position or Camera.CFrame.Position
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP then
+				local model = plr.Character
+				local hum = model and model:FindFirstChildOfClass("Humanoid")
+
+				if hum and hum.Health > 0 and FX.allowed(plr) then
+					local root = model:FindFirstChild("HumanoidRootPart")
+						or hum.RootPart
+						or model:FindFirstChild("Torso")
+						or model:FindFirstChild("UpperTorso")
+						or model:FindFirstChild("Head")
+
+					if root and root:IsA("BasePart") and root.Parent then
+						local aim = getAimPoint(root)
+
+						table.insert(list, {
+							root = root,
+							aim = aim,
+							dist = (aim - origin).Magnitude,
+						})
+					end
+				end
+			end
+		end
+
+		table.sort(list, function(a, b)
+			return a.dist < b.dist
+		end)
+
+		return list
+	end
+
+	-- sends every bomb that is not in the orbit back to the orbit
+	function SW.recall()
+		local any = false
+
+		for _, b in ipairs(SW.bombs) do
+			if b.phase ~= "orbit" then
+				SW.stopSpin(b)
+				b.phase = "orbit"
+				b.part.CanCollide = false
+				any = true
+			end
+		end
+
+		SW.spinUntil = nil
+
+		return any
+	end
+
+	function SW.setLock(on, message)
+		if on then
+			-- v23: SCATTER picks a random target for every bomb by itself
+			if SW.mode == "scatter" then
+				SW.say(FX.L("sc_nolock"), THEME.Warn)
+				playUI("Error")
+				return false
+			end
+
+			local list = SW.list()
+
+			if #list == 0 then
+				SW.say(FX.L("m_notarget"), THEME.Danger)
+				playUI("Error")
+				return false
+			end
+
+			-- nearest target in front of the camera, otherwise simply the nearest
+			local pick = list[1]
+
+			for _, e in ipairs(list) do
+				if Camera:WorldToViewportPoint(e.aim).Z > 0 then
+					pick = e
+					break
+				end
+			end
+
+			SW.lockRoot = pick.root
+			SW.lockOn = true
+
+			SW.say(FX.L("m_locked"), THEME.Danger)
+			playUI("On")
+			SW.refresh()
+
+			return true
+		end
+
+		local wasOn = SW.lockOn
+
+		SW.lockOn = false
+		SW.lockRoot = nil
+
+		if SW.recall() then
+			SW.say(FX.L("sw_recall"), THEME.Warn)
+		elseif message then
+			SW.say(message, THEME.Warn)
+		end
+
+		if wasOn then
+			playUI("Off")
+		end
+
+		SW.refresh()
+
+		return true
+	end
+
+	function SW.cycle()
+		if droneActive or editMode or SW.mode == "scatter" then
+			return
+		end
+
+		if not SW.lockOn then
+			SW.setLock(true)
+			return
+		end
+
+		local list = SW.list()
+
+		if #list < 2 then
+			SW.say(FX.L("m_noother"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		local idx = 0
+
+		for i, e in ipairs(list) do
+			if e.root == SW.lockRoot then
+				idx = i
+				break
+			end
+		end
+
+		SW.lockRoot = list[idx % #list + 1].root
+
+		SW.say(FX.L("m_switched"), THEME.Danger)
+		playUI("On")
+		SW.refresh()
+	end
+
+	----------------------------------------------------------
+	-- add / clear / launch
+	----------------------------------------------------------
+
+	function SW.add()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.syncMode()
+
+		if #SW.bombs >= Cfg.swarmMax then
+			SW.say(FX.L("sw_full"), THEME.Warn)
+			flashAdd(FX.L("sw_full"))
+			playUI("Error")
+			return
+		end
+
+		local part = getBombTarget()
+
+		if not part or not part.Parent or part == selectedBomb or SW.has(part) then
+			SW.say(FX.L("btn_bomb_none"), THEME.Danger)
+			flashAdd(FX.L("btn_bomb_none"))
+			playUI("Error")
+			return
+		end
+
+		local att = Instance.new("Attachment")
+		att.Name = "SwarmAtt"
+		att.Parent = part
+
+		local lv = Instance.new("LinearVelocity")
+		lv.Name = "SwarmLV"
+		lv.Attachment0 = att
+		lv.MaxForce = math.huge
+		lv.VectorVelocity = Vector3.zero
+		lv.Parent = part
+
+		local ao = Instance.new("AlignOrientation")
+		ao.Name = "SwarmAO"
+		ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+		ao.Attachment0 = att
+		ao.MaxTorque = math.huge
+		ao.Responsiveness = 200
+		ao.CFrame = part.CFrame - part.CFrame.Position
+		ao.Parent = part
+
+		table.insert(SW.bombs, {
+			part = part,
+			att = att,
+			lv = lv,
+			ao = ao,
+			cc = part.CanCollide,
+			phase = "orbit",
+			dir = Vector3.new(0, 1, 0),
+			speed = 0,
+			spd = SCATTER_SPEED,
+			t0 = 0,
+			attackAt = 0,
+			atkT0 = 0,
+			tr = part.Transparency, -- v23: used to see that the bomb disappeared
+			lastPos = part.Position,
+			hits = 0,
+			cT0 = 0,
+			rdir = Vector3.new(0, 1, 0),
+			tgt = nil,              -- v23 SCATTER: this bomb's own target
+		})
+
+		-- no collision while orbiting / scattering (so it never pushes you)
+		part.CanCollide = false
+
+		playUI("On")
+		SW.say(FX.L("sw_added"), HUD_GREEN)
+		SW.refresh()
+	end
+
+	function SW.clear()
+		if droneActive or editMode then
+			return
+		end
+
+		for _, b in ipairs(SW.bombs) do
+			SW.release(b)
+		end
+
+		table.clear(SW.bombs)
+
+		if SW.mode == "swarm" then
+			SW.lockOn = false
+			SW.lockRoot = nil
+		end
+
+		SW.spinUntil = nil
+
+		playUI("Off")
+		SW.say(FX.L("sw_cleared"), THEME.Warn)
+		SW.refresh()
+	end
+
+	-- SWARM (tab 2): scatter upward, then the bombs dive ONE BY ONE
+	function SW.launchSwarm()
+		local orbiters = SW.orbiters()
+
+		if #orbiters == 0 then
+			SW.say(FX.L("sw_empty"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		-- no target yet: lock the nearest one automatically
+		if not (SW.lockOn and SW.lockRoot and SW.lockRoot.Parent) then
+			if not SW.setLock(true) then
+				return
+			end
+		end
+
+		local now = os.clock()
+		local me = SW.playerRoot()
+		local center = me and (me.Position + Vector3.new(0, Cfg.swarmHeight, 0)) or Camera.CFrame.Position
+		local n = #orbiters
+
+		-- v26 NEAT SPREAD: sort the bombs by their angle around you, then give every bomb its own slot
+		-- on an evenly spaced ring (equal gaps, same height). Slot 1 starts at the angle of the first bomb,
+		-- so every bomb just slides straight outward to its slot (no crossing paths).
+		for _, b in ipairs(orbiters) do
+			local d = b.part.Position - center
+
+			b.sa = math.atan2(d.Z, d.X)
+		end
+
+		table.sort(orbiters, function(x, y)
+			return x.sa < y.sa
+		end)
+
+		local base = orbiters[1].sa
+		local ringH = math.max(Cfg.swarmHeight * 0.5, 6)
+
+		for i, b in ipairs(orbiters) do
+			local a = base + (i - 1) * (2 * math.pi / n)
+
+			b.sp0 = b.part.Position
+			b.sp1 = center + Vector3.new(math.cos(a) * Cfg.swarmSpread, ringH, math.sin(a) * Cfg.swarmSpread)
+			b.t0 = now
+			b.attackAt = now + Cfg.swarmScatter -- spread is finished here, then the bomb rushes at the target
+			b.speed = 0
+			b.phase = "scatter"
+		end
+
+		SW.gapUntil = 0
+
+		playUI("On")
+		SW.say(FX.L("sw_go"), THEME.Danger)
+		SW.refresh()
+	end
+
+	-- v24: look direction that never flips when the bomb flies straight up / down
+	function SW.face(dir)
+		local up = math.abs(dir.Y) > 0.97 and Vector3.new(0, 0, 1) or Vector3.new(0, 1, 0)
+
+		return CFrame.lookAt(Vector3.zero, dir, up)
+	end
+
+	-- v27: the point on the GROUND right under the target (the bomb must slam into the ground there)
+	function SW.groundPoint(root)
+		local aim = getAimPoint(root)
+		local skip = { root.Parent }
+
+		if LP.Character then
+			table.insert(skip, LP.Character)
+		end
+
+		for _, o in ipairs(SW.bombs) do
+			if o.part then
+				table.insert(skip, o.part)
+			end
+		end
+
+		local params = RaycastParams.new()
+
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = skip
+
+		local res = workspace:Raycast(aim, Vector3.new(0, -800, 0), params)
+		local y = res and res.Position.Y or (aim.Y - 6)
+
+		return Vector3.new(aim.X, y - 1.5, aim.Z)
+	end
+
+	-- v28: every waiting bomb gets its OWN slot above the target, far enough from the others
+	-- (14 studs apart) so they never touch and never blow up in the air.
+	-- Slot 1 = right above the target, slots 2-7 = ring of 6 around it, next 6 = same ring 14 studs higher...
+	function SW.holdSlot(b, aim, vel)
+		if not b.hs then
+			local used = {}
+
+			for _, o in ipairs(SW.bombs) do
+				if o ~= b and o.hs and (o.phase == "climb" or o.phase == "hold") then
+					used[o.hs] = true
+				end
+			end
+
+			local k = 1
+
+			while used[k] do
+				k += 1
+			end
+
+			b.hs = k
+		end
+
+		local SPACE = 14
+		local j = b.hs - 2
+		local off = Vector3.zero
+		local layer = 0
+
+		if j >= 0 then
+			layer = math.floor(j / 6)
+
+			local a = (j % 6) * (math.pi / 3)
+
+			off = Vector3.new(math.cos(a) * SPACE, 0, math.sin(a) * SPACE)
+		end
+
+		return Vector3.new(
+			aim.X + vel.X * 0.4 + off.X,
+			aim.Y + Cfg.nHeight + layer * SPACE,
+			aim.Z + vel.Z * 0.4 + off.Z
+		)
+	end
+
+	-- v24: every attack starts with a climb: straight up, over the target, then a straight dive ("n")
+	function SW.startClimb(b, now)
+		SW.stopSpin(b)
+
+		SW.slotN = (SW.slotN or 0) + 1
+
+		b.slot = SW.slotN
+		b.phase = "climb"
+		b.stage = 1
+		b.cl0 = now
+		b.speed = 30 -- v28: starts slow and accelerates smoothly like a rocket
+		b.cy0 = b.part.Position.Y
+		b.hs = nil
+		b.atkT0 = now
+		b.part.CanCollide = false
+	end
+
+	-- v23: the bomb counts as exploded only when it is gone from the game
+	function SW.gone(b)
+		local p = b.part
+
+		if not p or not p:IsDescendantOf(workspace) then
+			return true
+		end
+
+		if (b.phase == "attack" or b.phase == "retreat") and b.tr < 0.9 and p.Transparency >= 0.99 then
+			return true
+		end
+
+		return false
+	end
+
+	function SW.alive(root)
+		local model = root and root.Parent
+		local hum = model and model:FindFirstChildOfClass("Humanoid")
+
+		return hum ~= nil and hum.Health > 0
+	end
+
+	-- v23 SCATTER: random new target for one bomb (a target nobody else is using is preferred)
+	function SW.pickFor(b)
+		local list = SW.list()
+		local free = {}
+
+		for _, e in ipairs(list) do
+			local used = false
+
+			for _, o in ipairs(SW.bombs) do
+				if o ~= b and o.tgt == e.root and (o.phase == "burst" or o.phase == "climb" or o.phase == "hold" or o.phase == "attack" or o.phase == "retreat") then
+					used = true
+					break
+				end
+			end
+
+			if not used then
+				table.insert(free, e)
+			end
+		end
+
+		local pool = #free > 0 and free or list
+
+		if #pool == 0 then
+			return nil
+		end
+
+		return pool[math.random(#pool)].root
+	end
+
+	-- v23 SCATTER: position on the outward spiral (p = 0..1 progress, tt = seconds since launch)
+	function SW.burstPos(b, p, tt)
+		local e = p * p * (3 - 2 * p)
+		local r = b.r0 + (b.R1 - b.r0) * e
+		local a = b.a0 + b.sgn * math.rad(Cfg.scSpin) * tt
+
+		return b.center + Vector3.new(math.cos(a) * r, b.dh * e, math.sin(a) * r)
+	end
+
+	-- v23 SCATTER (tab 5): spiral outward while spinning, then every bomb dashes at its OWN random player
+	function SW.launchScatter()
+		SW.syncMode()
+
+		if SW.mode ~= "scatter" or SW.mode ~= SW.wantMode then
+			SW.say(FX.L("or_busy"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		local orbiters = SW.orbiters()
+
+		if #orbiters == 0 then
+			SW.say(FX.L("sw_empty"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		local list = SW.list()
+
+		if #list == 0 then
+			SW.say(FX.L("m_notarget"), THEME.Danger)
+			playUI("Error")
+			return
+		end
+
+		-- shuffle the targets: bomb 1 = target 1, bomb 2 = target 2 ... (random order)
+		for i = #list, 2, -1 do
+			local j = math.random(i)
+
+			list[i], list[j] = list[j], list[i]
+		end
+
+		local now = os.clock()
+		local me = SW.playerRoot()
+		local center = me and (me.Position + Vector3.new(0, Cfg.swarmHeight, 0)) or Camera.CFrame.Position
+		local sgn = (math.random() < 0.5) and 1 or -1
+
+		for i, b in ipairs(orbiters) do
+			local d = b.part.Position - center
+			local flat = Vector3.new(d.X, 0, d.Z)
+
+			b.tgt = list[(i - 1) % #list + 1].root
+			b.center = center
+			b.a0 = flat.Magnitude > 0.5 and math.atan2(d.Z, d.X) or (i - 1) * (2 * math.pi / #orbiters)
+			b.r0 = math.max(flat.Magnitude, 2)
+			b.R1 = Cfg.scDist * (0.8 + math.random() * 0.4)
+			b.dh = 8 + (math.random() * 2 - 1) * 12
+			b.sgn = sgn
+			b.t0 = now
+			b.attackAt = now + Cfg.scTime
+			b.hits = 0
+			b.phase = "burst"
+		end
+
+		SW.gapUntil = 0
+
+		playUI("On")
+		SW.say(FX.L("sc_go"), THEME.Danger)
+		SW.refresh()
+	end
+
+	-- ORBIT TARGET (tab 3): spin faster for tgtDelay seconds, then every bomb hits the target
+	function SW.attackOrbit()
+		SW.syncMode()
+
+		if SW.mode == "swarm" or SW.mode == "scatter" or SW.mode ~= SW.wantMode then
+			SW.say(FX.L("or_busy"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		if not (SW.lockOn and SW.lockRoot and SW.lockRoot.Parent) then
+			SW.say(FX.L("or_pick"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		if #SW.orbiters() == 0 then
+			SW.say(FX.L("sw_empty"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		if SW.spinUntil then
+			return
+		end
+
+		SW.spinT0 = os.clock()
+		SW.spinDur = (SW.mode == "tornado") and Cfg.tnDelay or Cfg.tgtDelay
+		SW.spinUntil = SW.spinT0 + SW.spinDur
+
+		playUI("On")
+		SW.say(FX.L("or_spin"), THEME.Danger)
+		SW.refresh()
+	end
+
+	-- ORBIT TARGET (tab 3): pick the target straight from the menu list
+	function SW.pickPlayer(plr)
+		if droneActive or editMode then
+			return
+		end
+
+		SW.syncMode()
+
+		if SW.mode == "swarm" or SW.mode == "scatter" or SW.mode ~= SW.wantMode then
+			SW.say(FX.L("or_busy"), THEME.Warn)
+			playUI("Error")
+			return
+		end
+
+		local model = plr.Character
+		local hum = model and model:FindFirstChildOfClass("Humanoid")
+		local root = model and (
+			model:FindFirstChild("HumanoidRootPart")
+			or model:FindFirstChild("Torso")
+			or model:FindFirstChild("UpperTorso")
+			or model:FindFirstChild("Head")
+		)
+
+		if not hum or hum.Health <= 0 or not root then
+			SW.say(FX.L("m_notarget"), THEME.Danger)
+			playUI("Error")
+
+			if SW.buildList then
+				SW.buildList()
+			end
+
+			return
+		end
+
+		SW.lockRoot = root
+		SW.lockOn = true
+		SW.spinUntil = nil
+
+		SW.say(FX.L("or_set"), THEME.Danger)
+		playUI("On")
+		SW.refresh()
+	end
+
+	function SW.launch()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.syncMode()
+
+		if SW.mode == "scatter" then
+			SW.launchScatter()
+		elseif SW.mode ~= "swarm" then
+			SW.attackOrbit()
+		else
+			SW.launchSwarm()
+		end
+	end
+
+	----------------------------------------------------------
+	-- button + key wiring
+	----------------------------------------------------------
+
+	SW.onLock = function()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.setLock(not SW.lockOn)
+	end
+
+	SW.onNext = SW.cycle
+	SW.onAdd = SW.add
+	SW.onClear = SW.clear
+	SW.onLaunch = SW.launch
+
+	SW.addButton.Activated:Connect(function()
+		SW.add()
+	end)
+
+	SW.clearButton.Activated:Connect(function()
+		SW.clear()
+	end)
+
+	SW.addButton2.Activated:Connect(function()
+		SW.add()
+	end)
+
+	SW.clearButton2.Activated:Connect(function()
+		SW.clear()
+	end)
+
+	SW.attackButton.Activated:Connect(function()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.attackOrbit()
+	end)
+
+	SW.refreshButton.Activated:Connect(function()
+		SW.buildList()
+	end)
+
+	SW.addButton3.Activated:Connect(function()
+		SW.add()
+	end)
+
+	SW.clearButton3.Activated:Connect(function()
+		SW.clear()
+	end)
+
+	SW.attackButton3.Activated:Connect(function()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.attackOrbit()
+	end)
+
+	SW.refreshButton3.Activated:Connect(function()
+		SW.buildList()
+	end)
+
+	SW.addButton4.Activated:Connect(function()
+		SW.add()
+	end)
+
+	SW.clearButton4.Activated:Connect(function()
+		SW.clear()
+	end)
+
+	SW.launchButton4.Activated:Connect(function()
+		if droneActive or editMode then
+			return
+		end
+
+		SW.launchScatter()
+	end)
+
+	conns[#conns + 1] = UIS.InputBegan:Connect(function(input, gp)
+		if gp or droneActive or editMode then
+			return
+		end
+
+		local key = input.KeyCode
+
+		if key == Enum.KeyCode.V then
+			SW.add()
+		elseif key == Enum.KeyCode.G then
+			SW.launch()
+		elseif key == Enum.KeyCode.L and #SW.bombs > 0 then
+			SW.setLock(not SW.lockOn)
+		elseif key == Enum.KeyCode.T and #SW.bombs > 0 then
+			SW.cycle()
+		end
+	end)
+
+	----------------------------------------------------------
+	-- main loop (wavy orbit, scatter, hold, one-by-one dive, orbit-target spin)
+	----------------------------------------------------------
+
+	local lastT = os.clock()
+	local uiT = 0
+
+	-- the open tab decides the mode; it only changes while no bomb is flying
+	function SW.syncMode()
+		if SW.mode == SW.wantMode then
+			return
+		end
+
+		for _, b in ipairs(SW.bombs) do
+			if b.phase ~= "orbit" then
+				return
+			end
+		end
+
+		SW.mode = SW.wantMode
+		SW.lockOn = false
+		SW.lockRoot = nil
+		SW.spinUntil = nil
+
+		SW.refresh()
+	end
+
+	conns[#conns + 1] = RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		local dt = math.clamp(now - lastT, 0.001, 0.1)
+
+		lastT = now
+
+		SW.panel.Visible = (not droneActive) and (#SW.bombs > 0 or editMode)
+
+		if SW.msgLabel.Text ~= "" and now > SW.msgUntil then
+			SW.msgLabel.Text = ""
+		end
+
+		SW.syncMode()
+
+		local changed = false
+
+		-- v23: a bomb only counts as exploded when it DISAPPEARS (the game removed it)
+		for i = #SW.bombs, 1, -1 do
+			local b = SW.bombs[i]
+
+			if SW.gone(b) then
+				if b.phase == "attack" or b.phase == "retreat" then
+					SW.explode(b.lastPos)
+					SW.say(FX.L("sw_hit"), THEME.Danger)
+					playUI("Error")
+				end
+
+				SW.release(b)
+				table.remove(SW.bombs, i)
+				changed = true
+			else
+				b.lastPos = b.part.Position
+			end
+		end
+
+		-- target died / left
+		if SW.lockOn then
+			local model = SW.lockRoot and SW.lockRoot.Parent
+			local hum = model and model:FindFirstChildOfClass("Humanoid")
+
+			if not hum or hum.Health <= 0 then
+				local list = SW.list()
+
+				if SW.mode == "swarm" and list[1] then
+					-- swarm: next target
+					SW.lockRoot = list[1].root
+					SW.say(FX.L("m_switched"), THEME.Danger)
+				else
+					SW.lockOn = false
+					SW.lockRoot = nil
+
+					if SW.recall() then
+						SW.say(FX.L("sw_back"), THEME.Warn)
+					elseif #SW.bombs > 0 then
+						SW.say(FX.L("m_targetlost"), THEME.Warn)
+					end
+
+					if SW.buildList and FX.tab >= 3 then
+						SW.buildList()
+					end
+				end
+
+				changed = true
+			end
+		end
+
+		if #SW.bombs == 0 then
+			if SW.mode == "swarm" then
+				SW.lockOn = false
+				SW.lockRoot = nil
+			end
+
+			SW.spinUntil = nil
+			box.Visible = false
+
+			if changed then
+				SW.refresh()
+			end
+
+			return
+		end
+
+		local me = SW.playerRoot()
+		local tgtOk = SW.lockOn and SW.lockRoot and SW.lockRoot.Parent
+		local aroundTarget = (SW.mode == "orbit" or SW.mode == "tornado") and tgtOk
+
+		-- orbit target: the spin gets faster and faster, at the end everybody dives
+		local spinK = 1
+		local spinP = 0
+
+		if SW.spinUntil then
+			if not aroundTarget then
+				SW.spinUntil = nil
+			elseif now >= SW.spinUntil then
+				SW.gapUntil = 0
+
+				for _, b in ipairs(SW.bombs) do
+					if b.phase == "orbit" then
+						SW.startClimb(b, now)
+					end
+				end
+
+				SW.spinUntil = nil
+				spinK = SPIN_MULT
+				spinP = 1
+				changed = true
+			else
+				local p = math.clamp((now - SW.spinT0) / math.max(SW.spinDur, 0.5), 0, 1)
+
+				spinP = p
+				spinK = 1 + (SPIN_MULT - 1) * (p * p * (3 - 2 * p))
+			end
+		end
+
+		-- ring bombs = waiting in the orbit ("orbit") or about to dive from the orbit ("pre")
+		local ring = {}
+
+		for _, b in ipairs(SW.bombs) do
+			if b.phase == "orbit" or b.phase == "pre" then
+				table.insert(ring, b)
+
+				if b.phase == "pre" then
+					spinK = SPIN_MULT
+					spinP = 1
+				end
+			end
+		end
+
+		local baseOrbit = Cfg.swarmOrbit
+
+		if aroundTarget then
+			baseOrbit = SW.mode == "tornado" and Cfg.tnSpeed or Cfg.tgtOrbit
+		end
+
+		local omega = math.rad(baseOrbit) * spinK
+
+		SW.angle = (SW.angle + dt * omega) % (2 * math.pi)
+
+		if #ring > 0 then
+			local center, radius, cVel
+			local tornado = aroundTarget and SW.mode == "tornado"
+
+			if aroundTarget then
+				-- orbit: far away from the target (tgtDist studs) so it can't grab the bombs
+				-- tornado: a funnel around the target
+				center = getAimPoint(SW.lockRoot) + Vector3.new(0, tornado and (Cfg.tnLift - 2) or Cfg.tgtHeight, 0)
+				radius = tornado and Cfg.tnRadius or Cfg.tgtDist
+				cVel = SW.lockRoot.AssemblyLinearVelocity
+			elseif me then
+				center = me.Position + Vector3.new(0, Cfg.swarmHeight, 0)
+				radius = Cfg.swarmRadius
+				cVel = me.AssemblyLinearVelocity
+			end
+
+			if center then
+				local gain = math.min(12, 0.8 / dt)
+				local maxSpeed = ORBIT_APPROACH + cVel.Magnitude + radius * omega
+				local amp = math.clamp(radius * 0.25, 2, 8) -- wave height
+				local squeeze = tornado and (1 - TN_SQUEEZE * spinP) or 1
+
+				for k, b in ipairs(ring) do
+					local a, desired, tang, dY
+
+					if tornado then
+						-- spiral: low bombs on a narrow ring, high bombs on a wide ring
+						local frac = (#ring > 1) and ((k - 1) / (#ring - 1)) or 0
+						local rk = (TN_BOTTOM + (1 - TN_BOTTOM) * frac) * radius * squeeze
+
+						a = SW.angle + (k - 1) * 2.4
+						desired = center + Vector3.new(math.cos(a) * rk, frac * Cfg.tnHeight, math.sin(a) * rk)
+						tang = rk * omega
+						dY = 0
+					else
+						-- wavy orbit: the height follows a wave that travels around the ring
+						a = SW.angle + (k - 1) * (2 * math.pi / #ring)
+
+						local ph = a * WAVES + now * WAVE_SPEED
+
+						dY = math.clamp(math.cos(ph) * amp * (WAVES * omega + WAVE_SPEED), -100, 100)
+						desired = center + Vector3.new(math.cos(a) * radius, math.sin(ph) * amp, math.sin(a) * radius)
+						tang = radius * omega
+					end
+
+					local tangent = Vector3.new(-math.sin(a), 0, math.cos(a))
+					local v = (desired - b.part.Position) * gain + tangent * tang + Vector3.new(0, dY, 0) + cVel
+
+					if v.Magnitude > maxSpeed then
+						v = v.Unit * maxSpeed
+					end
+
+					b.lv.VectorVelocity = v
+					b.ao.CFrame = CFrame.lookAt(Vector3.zero, tangent)
+
+					-- orbit / tornado: time to dive
+					if b.phase == "pre" and now >= b.attackAt then
+						SW.startClimb(b, now)
+						changed = true
+					end
+				end
+			else
+				-- no character right now: hold position
+				for _, b in ipairs(ring) do
+					b.lv.VectorVelocity = Vector3.zero
+				end
+			end
+		end
+
+		-- scatter / burst / hold / attack / retreat
+		for i = #SW.bombs, 1, -1 do
+			local b = SW.bombs[i]
+			local scat = SW.mode == "scatter"
+			local root = scat and b.tgt or SW.lockRoot
+			local rootOk
+
+			if scat then
+				rootOk = SW.alive(root)
+			else
+				rootOk = SW.lockOn and root and root.Parent
+			end
+
+			-- v23 SCATTER: this bomb's own target is gone -> new random target (or back to the orbit)
+			if scat and not rootOk and (b.phase == "burst" or b.phase == "climb" or b.phase == "hold" or b.phase == "attack" or b.phase == "retreat") then
+				local nt = SW.pickFor(b)
+
+				if nt then
+					b.tgt = nt
+					root = nt
+					rootOk = true
+					SW.say(FX.L("sc_lost"), THEME.Warn)
+				else
+					SW.stopSpin(b)
+					b.phase = "orbit"
+					b.part.CanCollide = false
+					SW.say(FX.L("sw_back"), THEME.Warn)
+					changed = true
+				end
+			end
+
+			if b.phase == "scatter" then
+				-- v26: smooth slide to the slot of the ring (ease in / out), bomb keeps pointing outward
+				local t = now - b.t0
+				local dur = math.max(Cfg.swarmScatter, 0.5)
+				local function slotAt(tt)
+					local p = math.clamp(tt / dur, 0, 1)
+					local e = p * p * (3 - 2 * p)
+
+					return b.sp0:Lerp(b.sp1, e)
+				end
+
+				local cur = slotAt(t)
+				local nxt = slotAt(t + dt)
+				local v = (nxt - cur) / dt + (cur - b.part.Position) * math.min(10, 0.8 / dt)
+
+				if v.Magnitude > 600 then
+					v = v.Unit * 600
+				end
+
+				b.lv.VectorVelocity = v
+
+				local out = b.sp1 - b.sp0
+
+				if out.Magnitude > 0.5 then
+					b.ao.CFrame = SW.face(out.Unit)
+				end
+
+				if now >= b.attackAt then
+					b.speed = 0
+
+					if SW.lockOn and SW.lockRoot and SW.lockRoot.Parent then
+						SW.startClimb(b, now)
+					else
+						b.dir = out.Magnitude > 0.5 and out.Unit or Vector3.new(0, 1, 0)
+						b.phase = "ready"
+					end
+				end
+
+			elseif b.phase == "burst" then
+				-- v23 SCATTER: outward spiral around the launch point, spinning
+				local t = now - b.t0
+				local dur = math.max(Cfg.scTime, 0.5)
+				local cur = SW.burstPos(b, math.clamp(t / dur, 0, 1), t)
+				local nxt = SW.burstPos(b, math.clamp((t + dt) / dur, 0, 1), t + dt)
+				local v = (nxt - cur) / dt + (cur - b.part.Position) * math.min(10, 0.8 / dt)
+
+				if v.Magnitude > 600 then
+					v = v.Unit * 600
+				end
+
+				b.lv.VectorVelocity = v
+
+				if v.Magnitude > 1 then
+					b.ao.CFrame = CFrame.lookAt(Vector3.zero, v.Unit)
+				end
+
+				if now >= b.attackAt and rootOk then
+					SW.startClimb(b, now)
+					changed = true
+				end
+
+			elseif b.phase == "climb" then
+				-- v28: ONE smooth curve: rises like a rocket, bends over the target with no sharp corner,
+				-- brakes softly and settles in its own slot above the target
+				if rootOk then
+					local aim = getAimPoint(root)
+					local vel = root.AssemblyLinearVelocity
+					local pos = b.part.Position
+					local atk = scat and Cfg.scSpeed or Cfg.swarmSpeed
+					local goal = SW.holdSlot(b, aim, vel)
+					local to = goal - pos
+					local flatV = Vector3.new(to.X, 0, to.Z)
+
+					b.speed += (math.max(150, atk) - b.speed) * (1 - math.exp(-2.2 * dt))
+
+					local w = math.clamp((goal.Y - pos.Y) / math.max(goal.Y - (b.cy0 or pos.Y), 1), 0, 1)
+
+					w = w * w
+
+					local d
+
+					if flatV.Magnitude < 1 then
+						d = to.Magnitude > 0.1 and to.Unit or Vector3.new(0, 1, 0)
+					else
+						d = (Vector3.new(0, 1, 0) * w + flatV.Unit * (1 - w))
+
+						if goal.Y < pos.Y then
+							d = to.Unit
+						end
+
+						d = d.Unit
+					end
+
+					local spd = math.min(b.speed, math.max(to.Magnitude * 3.5, 40))
+					local vNew = b.lv.VectorVelocity:Lerp(d * spd, 1 - math.exp(-6 * dt))
+
+					b.lv.VectorVelocity = vNew
+
+					if vNew.Magnitude > 1 then
+						b.ao.CFrame = SW.face(vNew.Unit)
+					end
+
+					if to.Magnitude < 8 or now - b.cl0 > 9 then
+						-- in its slot above the target: hover here and wait for the turn to dive
+						b.phase = "hold"
+						b.holdT = now
+						changed = true
+					end
+				else
+					b.phase = "orbit"
+					b.part.CanCollide = false
+				end
+
+			elseif b.phase == "hold" then
+				-- v28: hovering in its OWN slot above the target (never close to another bomb)
+				if rootOk then
+					local aim = getAimPoint(root)
+					local vel = root.AssemblyLinearVelocity
+					local goal = SW.holdSlot(b, aim, vel)
+					local v = (goal - b.part.Position) * 6
+
+					if v.Magnitude > 200 then
+						v = v.Unit * 200
+					end
+
+					b.lv.VectorVelocity = v + vel
+					b.ao.CFrame = SW.face(Vector3.new(0, -1, 0))
+				else
+					b.phase = "orbit"
+					b.part.CanCollide = false
+				end
+
+			elseif b.phase == "ready" then
+				-- hover, face the target
+				b.speed = b.speed * math.exp(-5 * dt)
+				b.lv.VectorVelocity = b.dir * b.speed
+
+				if SW.lockOn and SW.lockRoot and SW.lockRoot.Parent then
+					local to = getAimPoint(SW.lockRoot) - b.part.Position
+
+					if to.Magnitude > 0.5 then
+						b.ao.CFrame = CFrame.lookAt(Vector3.zero, to.Unit)
+					end
+				end
+
+			elseif b.phase == "retreat" then
+				-- v27: IMPACT. The bomb is slammed into the ground under the target and keeps pushing down
+				-- (it never bounces back up). It counts as exploded when it DISAPPEARS (handled above).
+				-- Only if it is still here after 4 s it dives again.
+				b.part.AssemblyAngularVelocity = Vector3.zero
+
+				if rootOk then
+					local gp = SW.groundPoint(root)
+					local pos = b.part.Position
+					local atk = scat and Cfg.scSpeed or Cfg.swarmSpeed
+
+					if now - b.cT0 < 4 then
+						local to = gp - pos
+						local push = to.Magnitude > 0.05 and to.Unit or Vector3.new(0, -1, 0)
+
+						b.lv.VectorVelocity = push * math.max(80, atk * 0.5)
+						b.ao.CFrame = SW.face(push)
+					else
+						SW.startClimb(b, now)
+						SW.say(FX.L("sc_retry"), THEME.Warn)
+						changed = true
+					end
+				else
+					SW.stopSpin(b)
+					b.phase = "orbit"
+					b.part.CanCollide = false
+				end
+
+			elseif b.phase == "attack" then
+				-- v27: straight dive THROUGH the target into the ground under it
+				b.part.AssemblyAngularVelocity = Vector3.zero
+
+				if rootOk then
+					local gp = SW.groundPoint(root)
+					local pos = b.part.Position
+					local to = gp - pos
+					local dist = to.Magnitude
+					local atk = scat and Cfg.scSpeed or Cfg.swarmSpeed
+
+					b.speed += (atk - b.speed) * (1 - math.exp(-3.5 * dt))
+
+					-- reached the ground under the target (or pushed against it for 2.5 s): impact
+					if dist < math.max(IMPACT_DIST, b.speed * dt * 1.5) or now - (b.dT0 or now) > 2.5 then
+						b.cT0 = now
+						b.hits += 1
+						b.phase = "retreat"
+					else
+						-- straight line, no curve, no spin
+						b.dir = to.Unit
+						b.lv.VectorVelocity = b.dir * b.speed
+						b.ao.CFrame = SW.face(b.dir)
+					end
+				else
+					SW.stopSpin(b)
+					b.phase = "orbit"
+					b.part.CanCollide = false
+				end
+			end
+		end
+
+		-- v25: bombs hover above the target and dive ONE BY ONE, every BOMB INTERVAL seconds
+		-- (never waiting for the previous bomb to explode)
+		if now >= SW.gapUntil then
+			local pick
+
+			for _, b in ipairs(SW.bombs) do
+				if b.phase == "hold" and (not pick or (b.hs or 99) < (pick.hs or 99)) then
+					pick = b
+				end
+			end
+
+			if pick then
+				local scat = SW.mode == "scatter"
+				local root = scat and pick.tgt or SW.lockRoot
+
+				if root and root.Parent then
+					local d = getAimPoint(root) - pick.part.Position
+					local atk = scat and Cfg.scSpeed or Cfg.swarmSpeed
+
+					pick.dir = d.Magnitude > 0.1 and d.Unit or Vector3.new(0, -1, 0)
+					pick.speed = 60 -- v28: smooth rocket-like acceleration
+					SW.startSpin(pick)
+					pick.phase = "attack"
+					pick.dT0 = now
+					pick.part.CanCollide = pick.cc
+					SW.gapUntil = now + Cfg.nGap
+					changed = true
+				end
+			end
+		end
+
+		if #SW.bombs == 0 then
+			if SW.mode == "swarm" then
+				SW.lockOn = false
+				SW.lockRoot = nil
+			end
+
+			SW.spinUntil = nil
+			box.Visible = false
+			SW.refresh()
+			return
+		end
+
+		-- target box on screen
+		if (not droneActive) and SW.lockOn and SW.lockRoot and SW.lockRoot.Parent then
+			local sp = Camera:WorldToViewportPoint(getAimPoint(SW.lockRoot))
+
+			if sp.Z > 0 then
+				box.Position = UDim2.fromOffset(sp.X, sp.Y)
+				box.Visible = true
+			else
+				box.Visible = false
+			end
+		else
+			box.Visible = false
+		end
+
+		uiT += dt
+
+		if changed then
+			uiT = 0
+			SW.refresh()
+		elseif uiT >= 0.15 then
+			uiT = 0
+			SW.refreshLive()
+		end
+	end)
+
+	-- clean stop if the script is run again
+	env.__SwarmStrikeCleanup = function()
+		for _, c in ipairs(conns) do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+
+		for _, b in ipairs(SW.bombs) do
+			SW.release(b)
+		end
+
+		table.clear(SW.bombs)
+
+		pcall(function()
+			fxGui:Destroy()
+		end)
+	end
+
+	SW.refresh()
+end
+
+--========================================================
+-- RESPAWN
+--========================================================
+
+LP.CharacterAdded:Connect(function()
+	stopDrone()
+
+	task.wait(0.5)
+
+	Camera.CameraType = Enum.CameraType.Custom
+end)
+
+--========================================================
+-- SETTINGS APPLY + LAYOUT LOAD (device storage, optional)
+-- apply() only marks the load as done after a real read,
+-- so a late WhenLoaded or a retry can still apply the layout.
+--========================================================
+
+-- refreshes sliders / toggles / radar label from Cfg without saving
+function FX.syncUI()
+	for key, setter in pairs(FX.setters) do
+		setter(Cfg[key], true)
+	end
+
+	for _, refresh in pairs(FX.togglers) do
+		refresh()
+	end
+
+	FX.applyLang()
+end
+
+function FX.applySettings(t)
+	local function num(v, lo, hi, def)
+		v = tonumber(v)
+
+		if not v then
+			return def
+		end
+
+		return math.clamp(v, lo, hi)
+	end
+
+	SPEED = math.clamp(math.floor(num(t.speed, MIN_SPEED, MAX_SPEED, SPEED) / SPEED_STEP + 0.5) * SPEED_STEP, MIN_SPEED, MAX_SPEED)
+
+	Cfg.fov = num(t.fov, 40, 110, Cfg.fov)
+	Cfg.camDist = num(t.camDist, 10, 60, Cfg.camDist)
+	Cfg.sens = num(t.sens, 20, 300, Cfg.sens)
+	Cfg.boost = num(t.boost, 125, 400, Cfg.boost)
+	Cfg.swarmMax = math.floor(num(t.swarmMax, 1, 8, Cfg.swarmMax) + 0.5)
+	Cfg.swarmScatter = num(t.swarmScatter, 1, 6, Cfg.swarmScatter)
+	Cfg.swarmSpeed = num(t.swarmSpeed, 100, 800, Cfg.swarmSpeed)
+	Cfg.swarmHeight = num(t.swarmHeight, 5, 30, Cfg.swarmHeight)
+	Cfg.swarmRadius = num(t.swarmRadius, 4, 30, Cfg.swarmRadius)
+	Cfg.tgtDist = num(t.tgtDist, 30, 60, Cfg.tgtDist)
+	Cfg.tgtOrbit = num(t.tgtOrbit, 30, 240, Cfg.tgtOrbit)
+	Cfg.tgtDelay = num(t.tgtDelay, 0, 6, Cfg.tgtDelay)
+	Cfg.tnRadius = num(t.tnRadius, 20, 60, Cfg.tnRadius)
+	Cfg.tnHeight = num(t.tnHeight, 10, 50, Cfg.tnHeight)
+	Cfg.tnSpeed = num(t.tnSpeed, 60, 360, Cfg.tnSpeed)
+	Cfg.tnDelay = num(t.tnDelay, 0, 6, Cfg.tnDelay)
+
+	-- v25: old saves had a 3 s spin-up before the attack: reset it to 0 (instant launch) once
+	if tonumber(t.ver) ~= 25 then
+		Cfg.tgtDelay = 0
+		Cfg.tnDelay = 0
+	end
+	Cfg.tgtHeight = num(t.tgtHeight, 0, 40, Cfg.tgtHeight)
+	Cfg.tnLift = num(t.tnLift, 0, 40, Cfg.tnLift)
+	Cfg.spinPower = num(t.spinPower, 250, 5000, Cfg.spinPower)
+	Cfg.swarmOrbit = num(t.swarmOrbit, 20, 240, Cfg.swarmOrbit)
+	Cfg.swarmSpread = num(t.swarmSpread, 15, 100, Cfg.swarmSpread)
+	Cfg.scTime = num(t.scTime, 1, 6, Cfg.scTime)
+	Cfg.scDist = num(t.scDist, 30, 150, Cfg.scDist)
+	Cfg.scSpin = num(t.scSpin, 90, 720, Cfg.scSpin)
+	Cfg.scSpeed = num(t.scSpeed, 100, 800, Cfg.scSpeed)
+	Cfg.nHeight = num(t.nHeight, 30, 250, Cfg.nHeight)
+	Cfg.nGap = num(t.nGap, 0.5, 5, Cfg.nGap)
+
+	if t.lang == "EN" or t.lang == "ID" then
+		Cfg.lang = t.lang
+	end
+
+	if table.find(FX.RADAR_RANGES, tonumber(t.radarRange)) then
+		Cfg.radarRange = tonumber(t.radarRange)
+	end
+
+	for _, key in ipairs({ "friendCheck", "speedFx", "noSignal", "swarmCollapsed" }) do
+		if type(t[key]) == "boolean" then
+			Cfg[key] = t[key]
+		end
+	end
+
+	updateSpeedUI()
+	FX.syncUI()
+end
+
+local function loadLayoutLocal()
+	local applied = false
+
+	local function apply()
+		if applied then
+			return
+		end
+
+		-- the player already changed something this session: never overwrite it
+		if Store.dirty then
+			applied = true
+			return
+		end
+
+		local raw, source = Store.read()
+
+		if not raw then
+			print("[XEVRION HUB] no saved layout found yet")
+			return
+		end
+
+		local ok, data = pcall(function()
+			return game:GetService("HttpService"):JSONDecode(raw)
+		end)
+
+		if not ok or type(data) ~= "table" then
+			warn("[XEVRION HUB] saved layout is not valid JSON")
+			return
+		end
+
+		applied = true
+
+		local count = 0
+
+		for id, v in pairs(data) do
+			if ELEMENTS[id] and type(v) == "table" and tonumber(v.x) and tonumber(v.y) then
+				layout[id] = {
+					x = math.clamp(tonumber(v.x), 0, 1),
+					y = math.clamp(tonumber(v.y), 0, 1),
+					s = math.clamp(tonumber(v.s) or 1, MIN_LAYOUT_SCALE, MAX_LAYOUT_SCALE),
+				}
+				count += 1
+			end
+		end
+
+		if type(data._settings) == "table" then
+			FX.applySettings(data._settings)
+		end
+
+		applyAll()
+		print("[XEVRION HUB] layout loaded from " .. tostring(source) .. " (" .. count .. " elements)")
+	end
+
+	pcall(function()
+		game:GetService("LocalStorageService"):WhenLoaded(apply)
+	end)
+
+	apply()
+
+	-- retries in case storage finishes loading later
+	for _, t in ipairs({ 0.5, 1.5, 3, 6 }) do
+		task.delay(t, apply)
+	end
+end
+
+--========================================================
+-- INITIAL UI STATE
+--========================================================
+
+-- v15: ask friend state of everyone in the background (so FRIEND CHECK is ready)
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LP then
+		FX.askFriend(p)
+	end
+end
+
+Players.PlayerAdded:Connect(function(p)
+	FX.askFriend(p)
+end)
+
+refreshDroneButton()
+resetBombButton()
+setStatus(false)
+updateSpeedUI()
+refreshLockUI()
+updateLayoutForViewport()
+applyAll()
+
+loadLayoutLocal()
+
+setMenuOpen(true, true)
